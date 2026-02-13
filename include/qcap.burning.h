@@ -1,0 +1,37 @@
+#ifndef QCAP_BURNING_H
+#define QCAP_BURNING_H
+
+#include "qcap.serial.h"
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+// ##########################################################################################################################################################################################
+// #
+// # DISC BURNING FUNCTIONS
+// #
+// ##########################################################################################################################################################################################
+//
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_BURNING_DRIVE( CHAR cDriveName /*IN*/, CHAR * pVolumeName /*IN*/, PVOID * ppDrive /*OUT*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DESTROY_BURNING_DRIVE( PVOID pDrive /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_START_BURNING_DRIVE( PVOID pDrive /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_STOP_BURNING_DRIVE( PVOID pDrive /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_UNLOAD_DISC( PVOID pDrive /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_LOAD_DISC( PVOID pDrive /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_GET_DISC_INFO( PVOID pDrive /*IN*/, BOOL * pIsDiscBlank /*OUT*/, BOOL * pIsDiscWriteable /*OUT*/, DWORD * pDiscType /*OUT*/, ULONGLONG * pDiscRemainCapability /*OUT*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_ERASE_DISC( PVOID pDrive /*IN*/ );
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // QCAP_BURNING_H

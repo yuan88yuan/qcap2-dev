@@ -1,0 +1,115 @@
+#ifndef QCAP_WEBRTC_H
+#define QCAP_WEBRTC_H
+
+#include "qcap.hl7.h"
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+// ##########################################################################################################################################################################################
+// #
+// # WEBRTC FUNCTIONS (CHATROOM)
+// #
+// ##########################################################################################################################################################################################
+//
+typedef QRETURN (QCAP_EXPORT *PF_WEBRTC_CHATROOM_LOGIN_CALLBACK_EX)( PVOID pChatRoom /*IN*/, ULONG nPeerID /*IN*/, CHAR * pszPeerUserName /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN (QCAP_EXPORT *PF_WEBRTC_CHATROOM_LOGOUT_CALLBACK_EX)( PVOID pChatRoom /*IN*/, ULONG nPeerID /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN (QCAP_EXPORT *PF_WEBRTC_CHATROOM_GET_CUSTOM_PROPERTY_CALLBACK)( PVOID pChatRoom /*IN*/, ULONG nPeerID /*IN*/, CHAR * pszProperty /*IN*/, CHAR * pszValue /*OUT*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN (QCAP_EXPORT *PF_WEBRTC_CHATROOM_SET_CUSTOM_PROPERTY_CALLBACK)( PVOID pChatRoom /*IN*/, ULONG nPeerID /*IN*/, CHAR * pszProperty /*IN*/, CHAR * pszValue /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_WEBRTC_CHATROOM( ULONG nNetworkPort /*IN*/, PVOID * ppChatRoom /*OUT*/, CHAR * pszNetworkAdapterIP /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DESTROY_WEBRTC_CHATROOM( PVOID pChatRoom /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_CHATROOM_LOGIN_CALLBACK_EX( PVOID pChatRoom /*IN*/, PF_WEBRTC_CHATROOM_LOGIN_CALLBACK_EX pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_CHATROOM_LOGOUT_CALLBACK_EX( PVOID pChatRoom /*IN*/, PF_WEBRTC_CHATROOM_LOGOUT_CALLBACK_EX pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_CHATROOM_GET_CUSTOM_PROPERTY_CALLBACK( PVOID pChatRoom /*IN*/, PF_WEBRTC_CHATROOM_GET_CUSTOM_PROPERTY_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_CHATROOM_SET_CUSTOM_PROPERTY_CALLBACK( PVOID pChatRoom /*IN*/, PF_WEBRTC_CHATROOM_SET_CUSTOM_PROPERTY_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+// ##########################################################################################################################################################################################
+// #
+// # WEBRTC FUNCTIONS (P2P)
+// #
+// ##########################################################################################################################################################################################
+//
+typedef QRETURN (QCAP_EXPORT *PF_WEBRTC_CHATROOM_LOGIN_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, CHAR * pszPeerUserName /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN (QCAP_EXPORT *PF_WEBRTC_CHATROOM_LOGOUT_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN (QCAP_EXPORT *PF_WEBRTC_PRIVATE_SDP_PROPERTY_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, CHAR * pszType /*IN*/, CHAR * pszSDP /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN (QCAP_EXPORT *PF_WEBRTC_PEER_CONNECTED_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, QRESULT nConnectionStatus /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN (QCAP_EXPORT *PF_WEBRTC_PEER_DISCONNECTED_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN(QCAP_EXPORT *PF_WEBRTC_SEND_DATA_DONE_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, QRESULT nSendStatus /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN(QCAP_EXPORT *PF_WEBRTC_SEND_FILE_DONE_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, QRESULT nSendStatus /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN(QCAP_EXPORT *PF_WEBRTC_RECEIVED_DATA_DONE_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, CHAR * pszData /*IN*/, ULONG nDataSize /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN(QCAP_EXPORT *PF_WEBRTC_RECEIVED_FILE_DONE_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, CHAR * pszFilePathName /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN(QCAP_EXPORT *PF_WEBRTC_RECEIVED_FILE_STATUS_CALLBACK)( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, ULONG nRecvSize /*IN*/, ULONG nTotalSize /*IN*/, PVOID pUserData /*IN*/ );
+
+typedef QRETURN(QCAP_EXPORT *PF_WEBRTC_NETWORK_QOS_STATUS_CALLBACK)( PVOID pChatter /*IN*/, UINT iSessionNum /*IN*/, ULONG nExpectedBitRate /*IN*/, ULONG nExpectedFrameRate /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_WEBRTC_CHATTER( CHAR * pszChatRoomLoginIP /*IN*/, ULONG nChatRoomLoginPort /*IN*/, CHAR * pszUserName /*IN*/, PVOID * ppChatter /*OUT*/, ULONG * pLoginID /*OUT*/, ULONG nConnectionTimeout /*IN*/, CHAR * pszIceURL /*IN*/, CHAR * pszIceUserName /*IN*/, CHAR * pszIcePassword /*IN*/, CHAR * pszReceivedFileFolderPath /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DESTROY_WEBRTC_CHATTER( PVOID pChatter /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_START_WEBRTC_CHAT( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_STOP_WEBRTC_CHAT( PVOID pChatter /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_WEBRTC_SENDER( PVOID pChatter /*IN*/, UINT iSvrNum /*IN*/ /*0 ~ 63*/, ULONG nTotalSessions /*IN*/, PVOID * ppServer /*OUT*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_WEBRTC_RECEIVER( PVOID pChatter /*IN*/, UINT iCliNum /*IN*/ /*0 ~ 63*/, PVOID * ppClient /*OUT*/, ULONG nDecoderType /*IN*/, HWND hAttachedWindow /*IN*/, BOOL bThumbDraw /*IN*/, BOOL bMaintainAspectRatio /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SET_WEBRTC_PRIVATE_SDP_PROPERTY( PVOID pChatter /*IN*/, ULONG nPeerID /*IN*/, CHAR * pszSDP /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_GET_WEBRTC_CHATROOM_CUSTOM_PROPERTY( PVOID pChatter /*IN*/, CHAR * pszProperty /*IN*/, CHAR * * ppszValue /*OUT*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SET_WEBRTC_CHATROOM_CUSTOM_PROPERTY( PVOID pChatter /*IN*/, CHAR * pszProperty /*IN*/, CHAR * pszValue /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_ENUM_WEBRTC_USER_IN_CHATROOM( PVOID pChatter /*IN*/, ULONG * pPeerID /*OUT*/, CHAR * * ppszPeerUserName /*OUT*/, BOOL bNext /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SEND_WEBRTC_DATA( PVOID pChatter /*IN*/, CHAR * pszData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SEND_WEBRTC_FILE( PVOID pChatter /*IN*/, CHAR * pszFilePathName /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_CHATROOM_LOGIN_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_CHATROOM_LOGIN_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_CHATROOM_LOGOUT_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_CHATROOM_LOGOUT_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_PRIVATE_SDP_PROPERTY_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_PRIVATE_SDP_PROPERTY_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_PEER_CONNECTED_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_PEER_CONNECTED_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_PEER_DISCONNECTED_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_PEER_DISCONNECTED_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_SEND_DATA_DONE_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_SEND_DATA_DONE_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_SEND_FILE_DONE_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_SEND_FILE_DONE_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_RECEIVED_DATA_DONE_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_RECEIVED_DATA_DONE_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_RECEIVED_FILE_DONE_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_RECEIVED_FILE_DONE_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_RECEIVED_FILE_STATUS_CALLBACK( PVOID pChatter /*IN*/, PF_WEBRTC_RECEIVED_FILE_STATUS_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
+
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_WEBRTC_NETWORK_QOS_STATUS_CALLBACK( PVOID pChatter /*IN*/, UINT iSessionNum /*IN*/, ULONG nExpectedBitRate /*IN*/, ULONG nExpectedFrameRate /*IN*/, PVOID pUserData /*IN*/ );
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // QCAP_WEBRTC_H
