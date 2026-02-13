@@ -14,7 +14,7 @@ extern "C"
 // #
 // ##########################################################################################################################################################################################
 //
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_HL7_CONNECTION( CHAR * pszHL7ServerIP /*IN*/, ULONG nServerPort /*IN*/, CHAR * pszServerApplicationEntityTitle /*IN*/, CHAR * pszClientApplicationEntityTitle /*IN*/, PVOID * ppConnect /*OUT*/, ULONG nHL7Version /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_HL7_CONNECTION( CHAR * pszHL7ServerIP /*IN*/, ULONG nServerPort /*IN*/, CHAR * pszServerApplicationEntityTitle /*IN*/, CHAR * pszClientApplicationEntityTitle /*IN*/, PVOID * ppConnect /*OUT*/, ULONG nHL7Version DEFVAL( QCAP_HL7_VERSION_24 /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DESTROY_HL7_CONNECTION( PVOID pConnect /*IN*/ );
 

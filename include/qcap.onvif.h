@@ -44,11 +44,11 @@ typedef QRETURN (QCAP_EXPORT *PF_COMMUNICATION_SERVER_PTZ_MOVE_ABSOLUTE_CALLBACK
 
 typedef QRETURN (QCAP_EXPORT *PF_COMMUNICATION_SERVER_PTZ_MOVE_STOP_CALLBACK)( PVOID pServer /*IN*/, UINT iProNum /*IN*/, PVOID pUserData /*IN*/ );
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_COMMUNICATION_ONVIF_SERVER( ULONG nTotalVideoSources /*IN*/, ULONG nTotalAudioSources /*IN*/, ULONG nTotalVideoEncoders /*IN*/, ULONG nTotalAudioEncoders /*IN*/, ULONG nTotalProfiles /*IN*/, PVOID * ppServer /*OUT*/, CHAR * pszName /*IN*/, CHAR * pszLocation /*IN*/, CHAR * pszManufacturer /*IN*/, CHAR * pszModel /*IN*/, CHAR * pszHardwareVersion /*IN*/, CHAR * pszFirmwareVersion /*IN*/, CHAR * pszDeviceID /*IN*/, CHAR * pszRootAccount /*IN*/, CHAR * pszRootPassword /*IN*/, CHAR * pszNetworkAdapterIP /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_COMMUNICATION_ONVIF_SERVER( ULONG nTotalVideoSources /*IN*/, ULONG nTotalAudioSources /*IN*/, ULONG nTotalVideoEncoders /*IN*/, ULONG nTotalAudioEncoders /*IN*/, ULONG nTotalProfiles /*IN*/, PVOID * ppServer /*OUT*/, CHAR * pszName DEFVAL( NULL /*IN*/), CHAR * pszLocation DEFVAL( NULL /*IN*/), CHAR * pszManufacturer DEFVAL( NULL /*IN*/), CHAR * pszModel DEFVAL( NULL /*IN*/), CHAR * pszHardwareVersion DEFVAL( NULL /*IN*/), CHAR * pszFirmwareVersion DEFVAL( NULL /*IN*/), CHAR * pszDeviceID DEFVAL( NULL /*IN*/), CHAR * pszRootAccount DEFVAL( NULL /*IN*/), CHAR * pszRootPassword DEFVAL( NULL /*IN*/), CHAR * pszNetworkAdapterIP DEFVAL( NULL /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DESTROY_COMMUNICATION_SERVER( PVOID pServer /*IN*/ );
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_START_COMMUNICATION_SERVER( PVOID pServer /*IN*/, ULONG nNetworkPort /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_START_COMMUNICATION_SERVER( PVOID pServer /*IN*/, ULONG nNetworkPort DEFVAL( 8001 /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_STOP_COMMUNICATION_SERVER( PVOID pServer /*IN*/ );
 
@@ -116,7 +116,7 @@ QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_COMMUNICATION_SERVER_PTZ_MOVE_STO
 //
 typedef QRETURN (QCAP_EXPORT *PF_COMMUNICATION_EMULATOR_SCAN_DONE_CALLBACK)( PVOID pEmulator /*IN*/, ULONG nTotalServers /*IN*/, PVOID pUserData /*IN*/ );
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_COMMUNICATION_ONVIF_EMULATOR( PVOID * ppEmulator /*OUT*/, ULONG nEmulatorPort /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_COMMUNICATION_ONVIF_EMULATOR( PVOID * ppEmulator /*OUT*/, ULONG nEmulatorPort DEFVAL( 3702 /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DESTROY_COMMUNICATION_EMULATOR( PVOID pEmulator /*IN*/ );
 
@@ -132,7 +132,7 @@ QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_COMMUNICATION_EMULATOR_SCAN_DONE_
 //
 typedef QRETURN (QCAP_EXPORT *PF_COMMUNICATION_CLIENT_CONNECTED_CALLBACK)( PVOID pClient /*IN*/, ULONG nTotalVideoSources /*IN*/, ULONG nTotalAudioSources /*IN*/, ULONG nTotalVideoEncoders /*IN*/, ULONG nTotalAudioEncoders /*IN*/, ULONG nTotalProfiles /*IN*/, DWORD dwServiceTypes /*IN*/, CHAR * pszName /*IN*/, CHAR * pszLocationr /*IN*/, CHAR * pszManufacturer /*IN*/, CHAR * pszModel /*IN*/, CHAR * pszHardwareVersion /*IN*/, CHAR * pszFirmwareVersion /*IN*/, CHAR * pszDeviceID /*IN*/, PVOID pUserData /*IN*/ );
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_COMMUNICATION_ONVIF_CLIENT( CHAR * pszNetworkURL /*IN*/, PVOID * ppClient /*OUT*/, CHAR * pszAccount /*IN*/, CHAR * pszPassword /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_COMMUNICATION_ONVIF_CLIENT( CHAR * pszNetworkURL /*IN*/, PVOID * ppClient /*OUT*/, CHAR * pszAccount DEFVAL( NULL /*IN*/ /*DEFAULT = root*/), CHAR * pszPassword DEFVAL( NULL /*IN*/ /*DEFAULT = root*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DESTROY_COMMUNICATION_CLIENT( PVOID pClient /*IN*/ );
 

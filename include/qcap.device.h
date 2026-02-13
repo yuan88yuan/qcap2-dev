@@ -10,19 +10,19 @@ extern "C"
 
 // DEVICE FUNCTIONS /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DEVICE_ENUMERATION( ULONGLONG * * ppVideoDeviceList /*OUT*/, ULONG * pVideoDeviceSize /*OUT*/, ULONGLONG * * ppVideoEncoderDeviceList /*OUT*/, ULONG * pVideoEncoderDeviceSize /*OUT*/, ULONGLONG * * ppAudioDeviceList /*OUT*/, ULONG * pAudioDeviceSize /*OUT*/, ULONGLONG * * ppAudioEncoderDeviceList /*OUT*/, ULONG * pAudioEncoderDeviceSize /*OUT*/, ULONG nDeviceEnumType /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DEVICE_ENUMERATION( ULONGLONG * * ppVideoDeviceList /*OUT*/, ULONG * pVideoDeviceSize /*OUT*/, ULONGLONG * * ppVideoEncoderDeviceList /*OUT*/, ULONG * pVideoEncoderDeviceSize /*OUT*/, ULONGLONG * * ppAudioDeviceList /*OUT*/, ULONG * pAudioDeviceSize /*OUT*/, ULONGLONG * * ppAudioEncoderDeviceList /*OUT*/, ULONG * pAudioEncoderDeviceSize /*OUT*/, ULONG nDeviceEnumType DEFVAL( QCAP_ENUM_TYPE_DEVICE_NAME /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_GET_DEVICE_ENUMERATION_ITEM_INFO( UINT iDevNum /*IN*/, ULONGLONG * pDeviceList /*IN*/, ULONG * pDeviceInfoH /*OUT*/, ULONG * pDeviceInfoL /*OUT*/ );
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SET_DEFAULT_CUSTOM_DEVICE( CHAR * pszVideoDevName /*IN*/, CHAR * pszAudioDevName /*IN*/ );
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE( CHAR * pszDevName /*IN*/, UINT iDevNum /*IN*/, HWND hAttachedWindow /*IN*/, PVOID * ppDevice /*OUT*/, BOOL bThumbDraw /*IN*/, BOOL bMaintainAspectRatio /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE( CHAR * pszDevName /*IN*/, UINT iDevNum /*IN*/, HWND hAttachedWindow /*IN*/, PVOID * ppDevice /*OUT*/, BOOL bThumbDraw DEFVAL( FALSE /*IN*/), BOOL bMaintainAspectRatio DEFVAL( FALSE /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DESTROY( PVOID pDevice /*IN*/ );
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_RUN( PVOID pDevice /*IN*/ );
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_RUN_EX( PVOID pDevice /*IN*/, BOOL bStopAfterSignalRemoved /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_RUN_EX( PVOID pDevice /*IN*/, BOOL bStopAfterSignalRemoved DEFVAL( TRUE /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_STOP( PVOID pDevice /*IN*/ );
 
@@ -160,7 +160,7 @@ QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SET_KVM_MOUSE( PVOID pDevice /*IN*/, ULONG
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SET_KVM_TOUCH( PVOID pDevice /*IN*/, ULONG nPoints /*IN*/, INT * pPointX /*IN*/, INT * pPointY /*IN*/, BOOL * pIsPointTouch /*IN*/ );
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_GET_DEVICE_CUSTOM_PROPERTY_PAGE( PVOID pDevice /*IN*/, HWND hAttachedWindow /*IN*/, UINT iPageNum /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_GET_DEVICE_CUSTOM_PROPERTY_PAGE( PVOID pDevice /*IN*/, HWND hAttachedWindow /*IN*/, UINT iPageNum DEFVAL( 0 /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_GET_DEVICE_CUSTOM_PROPERTY( PVOID pDevice /*IN*/, ULONG nProperty /*IN*/, ULONG * pValue /*OUT*/ );
 
@@ -170,9 +170,9 @@ QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_GET_DEVICE_CUSTOM_PROPERTY_EX( PVOID pDevi
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SET_DEVICE_CUSTOM_PROPERTY_EX( PVOID pDevice /*IN*/, ULONG nProperty /*IN*/, BYTE * pValue /*IN*/, ULONG nBytes /*IN*/ );
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DIAGNOSE_VIDEO_STREAM_DIFF_SHIFT( PVOID pDevice /*IN*/, double * pShiftX /*OUT*/, double * pShiftY /*OUT*/, ULONG nScanWindowSize /*IN*/, ULONG nScanStepSize /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DIAGNOSE_VIDEO_STREAM_DIFF_SHIFT( PVOID pDevice /*IN*/, double * pShiftX /*OUT*/, double * pShiftY /*OUT*/, ULONG nScanWindowSize DEFVAL( 25 /*IN*/), ULONG nScanStepSize DEFVAL( 10 /*IN*/ ));
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DIAGNOSE_VIDEO_STREAM_STATUS( PVOID pDevice /*IN*/, BOOL * pIsStill /*OUT*/, ULONG nStillThreshold /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DIAGNOSE_VIDEO_STREAM_STATUS( PVOID pDevice /*IN*/, BOOL * pIsStill /*OUT*/, ULONG nStillThreshold DEFVAL( 64 /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_DIAGNOSE_AUDIO_STREAM_STATUS( PVOID pDevice /*IN*/, double * pVolumeDB_L /*OUT*/ /*RANGE = -100 ~ 0 (DB)*/, double * pVolumeDB_R /*OUT*/ /*RANGE = -100 ~ 0 (DB)*/ );
 
@@ -222,13 +222,13 @@ QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_UNLOCK_AUDIO_PREVIEW_BUFFER( PVOID pDevice
 
 // SNAPSHOT FUNCTIONS ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SNAPSHOT_BMP( PVOID pDevice /*IN*/, CHAR * pszFilePathName /*IN*/, BOOL bIsAsync /*IN*/, ULONG nMilliseconds /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SNAPSHOT_BMP( PVOID pDevice /*IN*/, CHAR * pszFilePathName /*IN*/, BOOL bIsAsync DEFVAL( TRUE /*IN*/), ULONG nMilliseconds DEFVAL( 0 /*IN*/ ));
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SNAPSHOT_JPG( PVOID pDevice /*IN*/, CHAR * pszFilePathName /*IN*/, ULONG nQuality /*IN*/, BOOL bIsAsync /*IN*/, ULONG nMilliseconds /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SNAPSHOT_JPG( PVOID pDevice /*IN*/, CHAR * pszFilePathName /*IN*/, ULONG nQuality /*IN*/, BOOL bIsAsync DEFVAL( TRUE /*IN*/), ULONG nMilliseconds DEFVAL( 0 /*IN*/ ));
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SNAPSHOT_BMP_EX( PVOID pDevice /*IN*/, CHAR * pszFilePathName /*IN*/, ULONG nCropX /*IN*/, ULONG nCropY /*IN*/, ULONG nCropW /*IN*/, ULONG nCropH /*IN*/, ULONG nDstW /*IN*/, ULONG nDstH /*IN*/, BOOL bIsAsync /*IN*/, ULONG nMilliseconds /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SNAPSHOT_BMP_EX( PVOID pDevice /*IN*/, CHAR * pszFilePathName /*IN*/, ULONG nCropX /*IN*/, ULONG nCropY /*IN*/, ULONG nCropW /*IN*/, ULONG nCropH /*IN*/, ULONG nDstW /*IN*/, ULONG nDstH /*IN*/, BOOL bIsAsync DEFVAL( TRUE /*IN*/), ULONG nMilliseconds DEFVAL( 0 /*IN*/ ));
 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SNAPSHOT_JPG_EX( PVOID pDevice /*IN*/, CHAR * pszFilePathName /*IN*/, ULONG nCropX /*IN*/, ULONG nCropY /*IN*/, ULONG nCropW /*IN*/, ULONG nCropH /*IN*/, ULONG nDstW /*IN*/, ULONG nDstH /*IN*/, ULONG nQuality /*IN*/, BOOL bIsAsync /*IN*/, ULONG nMilliseconds /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_SNAPSHOT_JPG_EX( PVOID pDevice /*IN*/, CHAR * pszFilePathName /*IN*/, ULONG nCropX /*IN*/, ULONG nCropY /*IN*/, ULONG nCropW /*IN*/, ULONG nCropH /*IN*/, ULONG nDstW /*IN*/, ULONG nDstH /*IN*/, ULONG nQuality /*IN*/, BOOL bIsAsync DEFVAL( TRUE /*IN*/), ULONG nMilliseconds DEFVAL( 0 /*IN*/ ));
 
 QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_SNAPSHOT_DONE_CALLBACK( PVOID pDevice /*IN*/, PF_SNAPSHOT_DONE_CALLBACK pCB /*IN*/, PVOID pUserData /*IN*/ );
 
@@ -236,7 +236,7 @@ QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_REGISTER_SNAPSHOT_STREAM_CALLBACK( PVOID p
 
 // CLONE FUNCTIONS //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // 
-QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_CLONE( PVOID pDevice /*IN*/, HWND hAttachedWindow /*IN*/, PVOID * ppCloneDevice /*OUT*/, BOOL bThumbDraw /*IN*/, BOOL bMaintainAspectRatio /*IN*/ );
+QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_CREATE_CLONE( PVOID pDevice /*IN*/, HWND hAttachedWindow /*IN*/, PVOID * ppCloneDevice /*OUT*/, BOOL bThumbDraw DEFVAL( FALSE /*IN*/), BOOL bMaintainAspectRatio DEFVAL( FALSE /*IN*/ ));
 
 #ifdef __cplusplus
 }

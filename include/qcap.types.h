@@ -3,6 +3,15 @@
 
 #include "qcap.windef.h"
 
+#define QCAP_EXT_API
+#define QCAP_EXPORT
+
+#ifdef __cplusplus
+#define DEFVAL(x) = x
+#else
+#define DEFVAL(x)
+#endif
+
 #ifdef __cplusplus
 extern "C"
 {
