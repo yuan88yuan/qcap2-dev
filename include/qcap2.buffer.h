@@ -2,6 +2,7 @@
 #define __QCAP2_BUFFER_H__
 
 #include "qcap2.types.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {

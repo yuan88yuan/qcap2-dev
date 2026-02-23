@@ -1,7 +1,7 @@
 #ifndef QCAP_ANIMATION_H
 #define QCAP_ANIMATION_H
 
-#include "qcap.playback.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

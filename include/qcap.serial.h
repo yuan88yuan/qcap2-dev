@@ -1,7 +1,7 @@
 #ifndef QCAP_SERIAL_H
 #define QCAP_SERIAL_H
 
-#include "qcap.virtualcamera.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

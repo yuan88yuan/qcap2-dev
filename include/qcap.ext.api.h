@@ -1,8 +1,9 @@
-#ifndef __QCAP_COMMON_API_H__
-#define __QCAP_COMMON_API_H__
+#ifndef __QCAP_EXT_API_H__
+#define __QCAP_EXT_API_H__
 
-#include "qcap.common.structs.h"
-#include "qcap.common.props.h"
+#include "qcap.types.h"
+#include "qcap.ext.structs.h"
+#include "qcap.ext.props.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -215,4 +216,4 @@ QCAP_EXT_API QRESULT QCAP_EXPORT QCAP_ALLOC_VIDEO_GPUDIRECT_PREVIEW_BUFFER_EX( P
 }
 #endif /* __cplusplus */
 
-#endif // __QCAP_COMMON_API_H__
+#endif // __QCAP_EXT_API_H__

@@ -1,7 +1,7 @@
 #ifndef __QCAP_LINUX_H__
 #define __QCAP_LINUX_H__
 
-#include "qcap.common.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 #if __cplusplus

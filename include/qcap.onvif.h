@@ -1,7 +1,7 @@
 #ifndef QCAP_ONVIF_H
 #define QCAP_ONVIF_H
 
-#include "qcap.broadcast.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

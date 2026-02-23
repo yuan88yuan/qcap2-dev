@@ -1,7 +1,7 @@
 #ifndef __QCAP2_CUDA_H__
 #define __QCAP2_CUDA_H__
 
-#include "qcap2.h"
+#include "qcap2.types.h"
 
 #include <cuda.h>
 #include <cuda_runtime_api.h>

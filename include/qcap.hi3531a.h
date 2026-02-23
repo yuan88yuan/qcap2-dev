@@ -1,7 +1,7 @@
 #ifndef __QCAP_HI3531A_H__
 #define __QCAP_HI3531A_H__
 
-#include "qcap.common.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 #if __cplusplus
@@ -28,11 +28,13 @@ enum {
 #pragma pack(push)
 #pragma pack(1)
 
+typedef struct QCAP_PROPERTY_AUDIO_RENDERER_VOLUME_IN QCAP_PROPERTY_AUDIO_RENDERER_VOLUME_IN;
 struct QCAP_PROPERTY_AUDIO_RENDERER_VOLUME_IN
 {
 	ULONG nVolume[QCAP_MAX_AUDIO_RENDERER_COUNT];
 };
 
+typedef struct QCAP_PROPERTY_AUDIO_RENDERER_VOLUME_OUT QCAP_PROPERTY_AUDIO_RENDERER_VOLUME_OUT;
 struct QCAP_PROPERTY_AUDIO_RENDERER_VOLUME_OUT
 {
 	ULONG nVolume[QCAP_MAX_AUDIO_RENDERER_COUNT];
@@ -40,6 +42,7 @@ struct QCAP_PROPERTY_AUDIO_RENDERER_VOLUME_OUT
 
 #pragma pack(pop)
 
+typedef struct qcap_av_packet_t qcap_av_packet_t;
 struct qcap_av_packet_t {
 	PVOID __pPrivateData0; // private use
 
@@ -51,6 +54,7 @@ struct qcap_av_packet_t {
 	int nFlags; // 1 for key-frame
 };
 
+typedef struct qcap_native_audio_frame_t qcap_native_audio_frame_t;
 struct qcap_native_audio_frame_t {
 	struct {
 		int32_t __nPrivateData0[2]; // private use
@@ -69,6 +73,7 @@ struct qcap_native_audio_frame_t {
 	} frames[2];
 };
 
+typedef struct qcap_av_frame_t qcap_av_frame_t;
 struct qcap_av_frame_t {
 	BYTE* pData[8]; // data pointer for each image plane
 	int nPitch[8]; // pitch for each image plane
@@ -84,6 +89,7 @@ struct qcap_av_frame_t {
 	int nFormat;
 };
 
+typedef struct qcap_generic_av_frame_t qcap_generic_av_frame_t;
 struct qcap_generic_av_frame_t {
 	int type;
 	// case 0xCAFE0001: video_frame
@@ -186,6 +192,7 @@ enum {
 #pragma pack(push)
 #pragma pack(1)
 
+typedef struct QCAP_PROPERTY_AUDIO_MIXER_SOURCE_VOLUME_VALUE QCAP_PROPERTY_AUDIO_MIXER_SOURCE_VOLUME_VALUE;
 struct QCAP_PROPERTY_AUDIO_MIXER_SOURCE_VOLUME_VALUE
 {
 	uint8_t volume[QCAP_MAX_AUDIO_MIXER_SOURCE_COUNT];
@@ -204,6 +211,7 @@ typedef QCAP_PROPERTY_MCU_VERSION_RESPONSE QCAP_PROPERTY_SC6D0N4_MCU_VERSION_RES
 #pragma pack(push)
 #pragma pack(1)
 
+typedef struct QCAP_PROPERTY_SC6D0N4_LED_REQ QCAP_PROPERTY_SC6D0N4_LED_REQ;
 struct QCAP_PROPERTY_SC6D0N4_LED_REQ
 {
 	unsigned char period;
@@ -213,6 +221,7 @@ struct QCAP_PROPERTY_SC6D0N4_LED_REQ
 	unsigned char green_end;
 };
 
+typedef struct QCAP_PROPERTY_SC6D0N4_LED_VALUE QCAP_PROPERTY_SC6D0N4_LED_VALUE;
 struct QCAP_PROPERTY_SC6D0N4_LED_VALUE
 {
 	QCAP_PROPERTY_SC6D0N4_LED_REQ led[5];
@@ -236,9 +245,10 @@ typedef QCAP_PROPERTY_MCU_VERSION_RESPONSE QCAP_PROPERTY_SC6D0N4SDI_MCU_VERSION_
 #pragma pack(push)
 #pragma pack(1)
 
+typedef struct QCAP_PROPERTY_SC6D0N4SDI_LED_IN QCAP_PROPERTY_SC6D0N4SDI_LED_IN;
 struct QCAP_PROPERTY_SC6D0N4SDI_LED_IN
 {
-	struct LED
+	struct SC6D0N4SDI_LED
 	{
 		unsigned char period;
 		unsigned char green_start;
@@ -248,6 +258,7 @@ struct QCAP_PROPERTY_SC6D0N4SDI_LED_IN
 	} led[5];
 };
 
+typedef struct QCAP_PROPERTY_SC6D0N4SDI_BUTTON_OUT QCAP_PROPERTY_SC6D0N4SDI_BUTTON_OUT;
 struct QCAP_PROPERTY_SC6D0N4SDI_BUTTON_OUT
 {
 	int size;
@@ -255,9 +266,10 @@ struct QCAP_PROPERTY_SC6D0N4SDI_BUTTON_OUT
 	uint32_t state[8];
 };
 
+typedef struct QCAP_PROPERTY_SC6D0N4SDI_BUTTON_BACKLIGHT_IN QCAP_PROPERTY_SC6D0N4SDI_BUTTON_BACKLIGHT_IN;
 struct QCAP_PROPERTY_SC6D0N4SDI_BUTTON_BACKLIGHT_IN
 {
-	struct LED
+	struct SC6D0N4SDI_BUTTON_BACKLIGHT_LED
 	{
 		unsigned char period;
 		unsigned char level;
@@ -272,11 +284,13 @@ struct QCAP_PROPERTY_SC6D0N4SDI_BUTTON_BACKLIGHT_IN
 	int async_mode;
 };
 
+typedef struct QCAP_PROPERTY_SC6D0N4SDI_AUDIO_MIXER_IN QCAP_PROPERTY_SC6D0N4SDI_AUDIO_MIXER_IN;
 struct QCAP_PROPERTY_SC6D0N4SDI_AUDIO_MIXER_IN
 {
 	unsigned char mixer_mask; // 1111 1111 => (LineIn4 LineIn3 LineIn2 LineIn1) (SDI4 SDI3 SDI2 SDI1)
 };
 
+typedef struct QCAP_PROPERTY_SC6D0N4SDI_AUDIO_MIXER_VOLUME_IN QCAP_PROPERTY_SC6D0N4SDI_AUDIO_MIXER_VOLUME_IN;
 struct QCAP_PROPERTY_SC6D0N4SDI_AUDIO_MIXER_VOLUME_IN
 {
 	unsigned char mixer_volume[8];
@@ -352,7 +366,7 @@ typedef QCAP_PROPERTY_SC6D0N4SDI_LED_IN QCAP_PROPERTY_SC6D0N4HDMI_LED_IN;
 typedef QCAP_PROPERTY_SC6D0N4SDI_BUTTON_OUT QCAP_PROPERTY_SC6D0N4HDMI_BUTTON_OUT;
 typedef QCAP_PROPERTY_SC6D0N4SDI_BUTTON_BACKLIGHT_IN QCAP_PROPERTY_SC6D0N4HDMI_BUTTON_BACKLIGHT_IN;
 typedef QCAP_PROPERTY_SC6D0N4SDI_AUDIO_MIXER_IN QCAP_PROPERTY_SC6D0N4HDMI_AUDIO_MIXER_IN;
-typedef QCAP_PROPERTY_SC6D0N4SDI_AUDIO_MIXER_VOLUME_IN QCAP_PROPERTY_SC6D0N4HDMI_AUDIO_MIXER_VOLUME_IN;
+typedef struct QCAP_PROPERTY_SC6D0N4SDI_AUDIO_MIXER_VOLUME_IN QCAP_PROPERTY_SC6D0N4HDMI_AUDIO_MIXER_VOLUME_IN;
 
 #pragma pack(push)
 #pragma pack(1)
@@ -444,11 +458,13 @@ struct QCAP_PROPERTY_SC6D0N4HDMI40_BUTTON_OUT
 };
 #endif
 
+typedef struct QCAP_PROPERTY_SC6D0N4HDMI40_SATA_LED_IN QCAP_PROPERTY_SC6D0N4HDMI40_SATA_LED_IN;
 struct QCAP_PROPERTY_SC6D0N4HDMI40_SATA_LED_IN
 {
 	int value;
 };
 
+typedef struct QCAP_PROPERTY_SC6D0N4HDMI40_SATA_LOCK_OUT QCAP_PROPERTY_SC6D0N4HDMI40_SATA_LOCK_OUT;
 struct QCAP_PROPERTY_SC6D0N4HDMI40_SATA_LOCK_OUT
 {
 	int state;

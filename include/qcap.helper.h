@@ -1,7 +1,7 @@
 #ifndef QCAP_HELPER_H
 #define QCAP_HELPER_H
 
-#include "qcap.timer.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

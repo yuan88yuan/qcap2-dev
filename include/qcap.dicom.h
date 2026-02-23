@@ -1,7 +1,7 @@
 #ifndef QCAP_DICOM_H
 #define QCAP_DICOM_H
 
-#include "qcap.onvif.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

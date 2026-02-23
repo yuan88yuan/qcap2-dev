@@ -1,6 +1,8 @@
 #ifndef __QCAP2_V4L2_IOCTL_H__
 #define __QCAP2_V4L2_IOCTL_H__
 
+#include "qcap2.types.h"
+
 #include <stdint.h>
 #include <linux/videodev2.h>
 
@@ -15,6 +17,7 @@ enum qcap2_v4l2_ctrl_mdin_ctrl_type_t {
 #pragma pack(push)
 #pragma pack(1)
 
+typedef struct qcap2_v4l2_ctrl_mdin_panel_t qcap2_v4l2_ctrl_mdin_panel_t;
 struct qcap2_v4l2_ctrl_mdin_panel_t {
 	uint8_t ctrl_type; // => qcap2_v4l2_ctrl_mdin_ctrl_type_panel
 
@@ -24,6 +27,7 @@ struct qcap2_v4l2_ctrl_mdin_panel_t {
 	uint8_t	AudioVolume;		//0-100**** (original range is 0-127)
 };
 
+typedef struct qcap2_v4l2_ctrl_mdin_pip_t qcap2_v4l2_ctrl_mdin_pip_t;
 struct qcap2_v4l2_ctrl_mdin_pip_t {
 	uint8_t ctrl_type; // => qcap2_v4l2_ctrl_mdin_ctrl_type_pip
 
@@ -39,6 +43,7 @@ struct qcap2_v4l2_ctrl_mdin_pip_t {
 	uint8_t		SizeHm;			//24-108, main video height (actual height = SizeHm * 20, actual range: 480-2160)
 };
 
+typedef struct qcap2_v4l2_ctrl_mdin_key_t qcap2_v4l2_ctrl_mdin_key_t;
 struct qcap2_v4l2_ctrl_mdin_key_t {
 	uint8_t ctrl_type; // => qcap2_v4l2_ctrl_mdin_ctrl_type_key
 

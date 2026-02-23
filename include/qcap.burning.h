@@ -1,7 +1,7 @@
 #ifndef QCAP_BURNING_H
 #define QCAP_BURNING_H
 
-#include "qcap.serial.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

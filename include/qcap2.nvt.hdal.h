@@ -1,7 +1,7 @@
 #ifndef __QCAP2_NVT_HDAL_H__
 #define __QCAP2_NVT_HDAL_H__
 
-#include "qcap2.h"
+#include "qcap2.types.h"
 
 #define BOOL HD_BOOL
 #include <hdal.h>

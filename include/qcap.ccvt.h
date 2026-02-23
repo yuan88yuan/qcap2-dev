@@ -1,7 +1,7 @@
 #ifndef __QCAP_CCVT_H__
 #define __QCAP_CCVT_H__
 
-#include "qcap.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 #if __cplusplus

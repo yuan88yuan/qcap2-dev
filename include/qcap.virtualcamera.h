@@ -1,7 +1,7 @@
 #ifndef QCAP_VIRTUALCAMERA_H
 #define QCAP_VIRTUALCAMERA_H
 
-#include "qcap.animation.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

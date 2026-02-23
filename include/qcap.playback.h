@@ -1,7 +1,7 @@
 #ifndef QCAP_PLAYBACK_H
 #define QCAP_PLAYBACK_H
 
-#include "qcap.sip.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

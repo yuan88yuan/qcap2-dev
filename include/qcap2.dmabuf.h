@@ -1,9 +1,9 @@
 #ifndef __QCAP2_DMABUF_H__
 #define __QCAP2_DMABUF_H__
 
-#include "qcap2.h"
+#include "qcap2.types.h"
 
-struct qcap2_dmabuf_t;
+typedef struct qcap2_dmabuf_t qcap2_dmabuf_t;
 
 struct qcap2_dmabuf_t {
 	int fd;

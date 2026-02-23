@@ -1,7 +1,5 @@
-#ifndef __QCAP_COMMON_CORE_H__
-#define __QCAP_COMMON_CORE_H__
-
-#include "qcap.types.h"
+#ifndef __QCAP_EXT_CORE_H__
+#define __QCAP_EXT_CORE_H__
 
 #ifdef __cplusplus
 extern "C" {
@@ -159,4 +157,4 @@ enum {
 }
 #endif /* __cplusplus */
 
-#endif // __QCAP_COMMON_CORE_H__
+#endif // __QCAP_EXT_CORE_H__

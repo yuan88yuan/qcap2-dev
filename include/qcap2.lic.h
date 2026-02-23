@@ -1,6 +1,7 @@
 #ifndef __QCAP2_LIC_H__
 #define __QCAP2_LIC_H__
 
+#include "qcap2.types.h"
 #include <stdint.h>
 
 #define QCAP2_DECL_LIC(__lic) volatile uint32_t __lic

@@ -1,7 +1,7 @@
 #ifndef QCAP_DEVICE_H
 #define QCAP_DEVICE_H
 
-#include "qcap.system.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

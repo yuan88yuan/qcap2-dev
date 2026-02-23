@@ -1,7 +1,8 @@
-#ifndef __QCAP_COMMON_CALLBACKS_H__
-#define __QCAP_COMMON_CALLBACKS_H__
+#ifndef __QCAP_EXT_CALLBACKS_H__
+#define __QCAP_EXT_CALLBACKS_H__
 
-#include "qcap.common.core.h"
+#include "qcap.types.h"
+#include "qcap.ext.core.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,4 +39,4 @@ typedef QRETURN (QCAP_EXPORT *PF_DANTE_SERVER_MESSAGE_CALLBACK1)( PVOID pServer 
 }
 #endif /* __cplusplus */
 
-#endif // __QCAP_COMMON_CALLBACKS_H__
+#endif // __QCAP_EXT_CALLBACKS_H__

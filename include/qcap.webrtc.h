@@ -1,7 +1,7 @@
 #ifndef QCAP_WEBRTC_H
 #define QCAP_WEBRTC_H
 
-#include "qcap.hl7.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

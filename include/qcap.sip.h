@@ -1,7 +1,7 @@
 #ifndef QCAP_SIP_H
 #define QCAP_SIP_H
 
-#include "qcap.webrtc.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

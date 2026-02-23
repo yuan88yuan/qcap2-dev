@@ -5,59 +5,60 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #define qcap2_container_of(ptr, type, member) ({ \
 	void* __mptr = (void*)(ptr); \
 	((type *)((char *)__mptr - offsetof(type, member))); \
 })
 
-struct qcap2_av_frame_t;
-struct qcap2_av_packet_t;
-struct qcap2_input_format_t;
-struct qcap2_video_format_t;
-struct qcap2_audio_format_t;
-struct qcap2_video_encoder_property_t;
-struct qcap2_audio_encoder_property_t;
-struct qcap2_video_encoder_dynamic_property_t;
-struct qcap2_media_info_t;
-struct qcap2_program_info_t;
-struct qcap2_benaphore_lock_t;
+typedef struct qcap2_av_frame_t qcap2_av_frame_t;
+typedef struct qcap2_av_packet_t qcap2_av_packet_t;
+typedef struct qcap2_input_format_t qcap2_input_format_t;
+typedef struct qcap2_video_format_t qcap2_video_format_t;
+typedef struct qcap2_audio_format_t qcap2_audio_format_t;
+typedef struct qcap2_video_encoder_property_t qcap2_video_encoder_property_t;
+typedef struct qcap2_audio_encoder_property_t qcap2_audio_encoder_property_t;
+typedef struct qcap2_video_encoder_dynamic_property_t qcap2_video_encoder_dynamic_property_t;
+typedef struct qcap2_media_info_t qcap2_media_info_t;
+typedef struct qcap2_program_info_t qcap2_program_info_t;
+typedef struct qcap2_benaphore_lock_t qcap2_benaphore_lock_t;
 
-struct qcap2_video_scaler_t;
-struct qcap2_audio_resampler_t;
-struct qcap2_video_encoder_t;
-struct qcap2_video_decoder_t;
-struct qcap2_audio_encoder_t;
-struct qcap2_audio_decoder_t;
-struct qcap2_frame_pool_t;
-struct qcap2_packet_pool_t;
-struct qcap2_event_t;
-struct qcap2_event_handlers_t;
-struct qcap2_rcbuffer_t;
-struct qcap2_rcbuffer_queue_t;
-struct qcap2_timer_t;
-struct qcap2_window_t;
-struct qcap2_block_lock_t;
-struct qcap2_binder_t;
+typedef struct qcap2_video_scaler_t qcap2_video_scaler_t;
+typedef struct qcap2_audio_resampler_t qcap2_audio_resampler_t;
+typedef struct qcap2_video_encoder_t qcap2_video_encoder_t;
+typedef struct qcap2_video_decoder_t qcap2_video_decoder_t;
+typedef struct qcap2_audio_encoder_t qcap2_audio_encoder_t;
+typedef struct qcap2_audio_decoder_t qcap2_audio_decoder_t;
+typedef struct qcap2_frame_pool_t qcap2_frame_pool_t;
+typedef struct qcap2_packet_pool_t qcap2_packet_pool_t;
+typedef struct qcap2_event_t qcap2_event_t;
+typedef struct qcap2_event_handlers_t qcap2_event_handlers_t;
+typedef struct qcap2_rcbuffer_t qcap2_rcbuffer_t;
+typedef struct qcap2_rcbuffer_queue_t qcap2_rcbuffer_queue_t;
+typedef struct qcap2_timer_t qcap2_timer_t;
+typedef struct qcap2_window_t qcap2_window_t;
+typedef struct qcap2_block_lock_t qcap2_block_lock_t;
+typedef struct qcap2_binder_t qcap2_binder_t;
 
-struct qcap2_qdev_enum_t;
-struct qcap2_qdev_info_t;
-struct qcap2_qdev_t;
-struct qcap2_video_source_t;
-struct qcap2_video_sink_t;
-struct qcap2_audio_source_t;
-struct qcap2_audio_sink_t;
-struct qcap2_demuxer_t;
-struct qcap2_muxer_t;
-struct qcap2_video_matte_t;
-struct qcap2_video_blender_t;
-struct qcap2_bitstream_filter_t;
-struct qcap2_dns_source_t;
-struct qcap2_clock_source_t;
+typedef struct qcap2_qdev_enum_t qcap2_qdev_enum_t;
+typedef struct qcap2_qdev_info_t qcap2_qdev_info_t;
+typedef struct qcap2_qdev_t qcap2_qdev_t;
+typedef struct qcap2_video_source_t qcap2_video_source_t;
+typedef struct qcap2_video_sink_t qcap2_video_sink_t;
+typedef struct qcap2_audio_source_t qcap2_audio_source_t;
+typedef struct qcap2_audio_sink_t qcap2_audio_sink_t;
+typedef struct qcap2_demuxer_t qcap2_demuxer_t;
+typedef struct qcap2_muxer_t qcap2_muxer_t;
+typedef struct qcap2_video_matte_t qcap2_video_matte_t;
+typedef struct qcap2_video_blender_t qcap2_video_blender_t;
+typedef struct qcap2_bitstream_filter_t qcap2_bitstream_filter_t;
+typedef struct qcap2_dns_source_t qcap2_dns_source_t;
+typedef struct qcap2_clock_source_t qcap2_clock_source_t;
 
 // graphics
-struct qcap2_font_atlas_t;
-struct qcap2_graphics_t;
+typedef struct qcap2_font_atlas_t qcap2_font_atlas_t;
+typedef struct qcap2_graphics_t qcap2_graphics_t;
 
 struct qcap2_build_config_t {
 	int major, minor, patch;
@@ -68,6 +69,7 @@ struct qcap2_build_config_t {
 	const char* commit;
 	const char* mods;
 };
+typedef struct qcap2_build_config_t qcap2_build_config_t;
 
 struct qcap2_av_frame_t {
 	uint8_t padding[512];
@@ -82,16 +84,19 @@ struct qcap2_dns_event_t {
 	uint8_t sockaddr[32];
 	char name[256];
 };
+typedef struct qcap2_dns_event_t qcap2_dns_event_t;
 
 struct qcap2_clock_event_t {
 	int error;
 	int64_t diff;
 };
+typedef struct qcap2_clock_event_t qcap2_clock_event_t;
 
 struct qcap2_rational_t {
 	int num;
 	int den;
 };
+typedef struct qcap2_rational_t qcap2_rational_t;
 
 // enum values
 enum qcap2_test_pattern_type_t {

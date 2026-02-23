@@ -1,7 +1,7 @@
 #ifndef __QCAP_H2_H__
 #define __QCAP_H2_H__
 
-#include "qcap.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C" {

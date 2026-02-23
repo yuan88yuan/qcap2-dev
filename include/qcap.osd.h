@@ -1,7 +1,7 @@
 #ifndef QCAP_OSD_H
 #define QCAP_OSD_H
 
-#include "qcap.recording.h"
+#include "qcap.types.h"
 
 #ifdef __cplusplus
 extern "C"

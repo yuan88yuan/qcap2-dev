@@ -1,7 +1,7 @@
 #ifndef __QCAP2_ALLEGRO2_H__
 #define __QCAP2_ALLEGRO2_H__
 
-#include "qcap2.h"
+#include "qcap2.types.h"
 
 extern "C"
 {
