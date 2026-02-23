@@ -6,6 +6,8 @@ This repository contains the QCAP library, a comprehensive suite of functions fo
 
 The `qcap.h` header file was initially monolithic, making it challenging to navigate and maintain. This version introduces a modular structure, breaking down the extensive `qcap.h` into smaller, logically grouped header files. This enhances readability, maintainability, and allows developers to include only the functionalities they need.
 
+The `qcap2.h` header has also been modularized into smaller headers (for types, utilities, buffers, formats, synchronization, processing, devices, and graphics). You can include `qcap2.h` to pull everything in, or include the specific `qcap2.*.h` modules you need.
+
 ### New Header Structure
 
 The `include/` directory now contains the following modular header files:
