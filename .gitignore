@@ -56,3 +56,4 @@ qcap_api.md
 
 # Gemini CLI temporary directory
 .gemini/tmp/
+run_tests\ntest_qcap2_buffer\n
