@@ -12,6 +12,11 @@ This directory contains implementation notes and usage constraints for QCAP2 API
 
 - [SYNC-EVENT-HANDLERS.md](./SYNC-EVENT-HANDLERS.md) — `qcap2_event_handlers_t` thread-based poll implementation, concurrency model, and invoke semantics.
 
+
+## Graphics APIs
+
+- [GRAPHICS.md](./GRAPHICS.md) — `qcap2_graphics_t` and `qcap2_font_atlas_t` CPU rendering, FreeType/HarfBuzz integration, and draw commands.
+
 ## Processing APIs
 
 - [AUDIO-RESAMPLER.md](./AUDIO-RESAMPLER.md) — `qcap2_audio_resampler_t` thread-safe concurrent conversion, FFmpeg dynamic reinitialization, and no-leak lifecycle management.
