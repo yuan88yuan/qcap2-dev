@@ -562,6 +562,136 @@ QRESULT qcap2_frame_pool_get_buffer(qcap2_frame_pool_t* pThis, qcap2_rcbuffer_t*
 }
 
 // ==============================================================================
+// qcap2_packet_pool_t Implementation
+// ==============================================================================
+
+typedef struct qcap2_packet_pool_priv_t {
+    std::mutex* mtx;
+    int packet_count;
+    bool running;
+    std::vector<qcap2_rcbuffer_t*> pool;
+
+    qcap2_packet_pool_priv_t() {
+        mtx = new std::mutex();
+        packet_count = 4;
+        running = false;
+    }
+
+    ~qcap2_packet_pool_priv_t() {
+        cleanup();
+        delete mtx;
+    }
+
+    void cleanup() {
+        for (auto buf : pool) {
+            qcap2_rcbuffer_release(buf);
+        }
+        pool.clear();
+    }
+} qcap2_packet_pool_priv_t;
+
+qcap2_packet_pool_t* qcap2_packet_pool_new() {
+    qcap2_packet_pool_priv_t* p = new qcap2_packet_pool_priv_t;
+    return (qcap2_packet_pool_t*)p;
+}
+
+void qcap2_packet_pool_delete(qcap2_packet_pool_t* pThis) {
+    if (pThis) {
+        qcap2_packet_pool_stop(pThis);
+        qcap2_packet_pool_priv_t* p = (qcap2_packet_pool_priv_t*)pThis;
+        delete p;
+    }
+}
+
+void qcap2_packet_pool_set_packet_count(qcap2_packet_pool_t* pThis, int nPacketCount) {
+    if (pThis) {
+        qcap2_packet_pool_priv_t* p = (qcap2_packet_pool_priv_t*)pThis;
+        std::lock_guard<std::mutex> lock(*(p->mtx));
+        p->packet_count = nPacketCount;
+    }
+}
+
+QRESULT qcap2_packet_pool_start(qcap2_packet_pool_t* pThis) {
+    if (!pThis) return QCAP_RS_ERROR_GENERAL;
+    qcap2_packet_pool_priv_t* p = (qcap2_packet_pool_priv_t*)pThis;
+    std::lock_guard<std::mutex> lock(*(p->mtx));
+
+    if (p->running) return QCAP_RS_SUCCESSFUL;
+
+    int count = p->packet_count > 0 ? p->packet_count : 4;
+    for (int i = 0; i < count; ++i) {
+        qcap2_av_packet_t* packet = new qcap2_av_packet_t;
+        qcap2_av_packet_init(packet);
+        // Initially no buffer is allocated until size is known
+
+        qcap2_rcbuffer_t* rc = qcap2_rcbuffer_new(packet, [](PVOID pData) {
+            qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)pData;
+            if (pkt) {
+                qcap2_av_packet_free_buffer(pkt);
+                delete pkt;
+            }
+        });
+
+        if (!rc) {
+            qcap2_av_packet_free_buffer(packet);
+            delete packet;
+            p->cleanup();
+            return QCAP_RS_ERROR_OUT_OF_MEMORY;
+        }
+
+        p->pool.push_back(rc);
+    }
+
+    p->running = true;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+QRESULT qcap2_packet_pool_stop(qcap2_packet_pool_t* pThis) {
+    if (!pThis) return QCAP_RS_ERROR_GENERAL;
+    qcap2_packet_pool_priv_t* p = (qcap2_packet_pool_priv_t*)pThis;
+    std::lock_guard<std::mutex> lock(*(p->mtx));
+
+    p->running = false;
+    p->cleanup();
+    return QCAP_RS_SUCCESSFUL;
+}
+
+QRESULT qcap2_packet_pool_get_buffer(qcap2_packet_pool_t* pThis, int nPacketSize, qcap2_rcbuffer_t** ppBuffer) {
+    if (!pThis || !ppBuffer) return QCAP_RS_ERROR_GENERAL;
+    qcap2_packet_pool_priv_t* p = (qcap2_packet_pool_priv_t*)pThis;
+    std::lock_guard<std::mutex> lock(*(p->mtx));
+
+    if (!p->running) return QCAP_RS_ERROR_GENERAL;
+
+    *ppBuffer = nullptr;
+
+    for (auto buf : p->pool) {
+        if (qcap2_rcbuffer_use_count(buf) == 1) {
+            qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)qcap2_rcbuffer_get_data(buf);
+            if (pkt) {
+                if (nPacketSize > 0) {
+                    uint8_t* current_buf = nullptr;
+                    int current_size = 0;
+                    qcap2_av_packet_get_buffer(pkt, &current_buf, &current_size);
+
+                    if (!current_buf || current_size < nPacketSize) {
+                        if (!qcap2_av_packet_alloc_buffer(pkt, nPacketSize)) {
+                            return QCAP_RS_ERROR_OUT_OF_MEMORY;
+                        }
+                    }
+                }
+
+                qcap2_rcbuffer_add_ref(buf);
+                *ppBuffer = buf;
+                return QCAP_RS_SUCCESSFUL;
+            }
+        }
+    }
+
+    return QCAP_RS_ERROR_GENERAL;
+}
+
+// ==============================================================================
 // qcap2_video_scaler_t Implementation
 // ==============================================================================
 
