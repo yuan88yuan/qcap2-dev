@@ -527,6 +527,7 @@ void test_qcap2_video_source_backends() {
     assert(qcap2_video_source_pop(vsrc, &user_popped) == QCAP_RS_SUCCESSFUL);
     assert(user_popped == custom_rcbuf);
 
+    qcap2_rcbuffer_release(user_popped);
     qcap2_rcbuffer_release(custom_rcbuf);
     assert(qcap2_video_source_stop(vsrc) == QCAP_RS_SUCCESSFUL);
 

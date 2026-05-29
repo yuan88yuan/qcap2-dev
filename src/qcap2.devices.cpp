@@ -107,10 +107,8 @@ private:
                 self->frame_index++;
 
                 // Push to the user queue (increases ref count)
-                qcap2_rcbuffer_add_ref(rcbuf);
                 QRESULT qres = qcap2_rcbuffer_queue_push(self->p->queue, rcbuf);
                 if (qres != QCAP_RS_SUCCESSFUL) {
-                    qcap2_rcbuffer_release(rcbuf);
                     std::lock_guard<std::mutex> lock(self->mtx);
                     self->idle_buffers.push_back(rcbuf);
                 }
@@ -896,10 +894,8 @@ private:
                 });
 
                 if (rcbuf) {
-                    QRESULT qres = qcap2_rcbuffer_queue_push(self->p->queue, rcbuf);
-                    if (qres != QCAP_RS_SUCCESSFUL) {
-                        qcap2_rcbuffer_release(rcbuf);
-                    }
+                    qcap2_rcbuffer_queue_push(self->p->queue, rcbuf);
+                    qcap2_rcbuffer_release(rcbuf);
                 }
             }
         }
@@ -1021,10 +1017,8 @@ private:
             });
 
             if (rcbuf) {
-                QRESULT qres = qcap2_rcbuffer_queue_push(self->p->queue, rcbuf);
-                if (qres != QCAP_RS_SUCCESSFUL) {
-                    qcap2_rcbuffer_release(rcbuf);
-                }
+                qcap2_rcbuffer_queue_push(self->p->queue, rcbuf);
+                qcap2_rcbuffer_release(rcbuf);
             }
         }
     }
