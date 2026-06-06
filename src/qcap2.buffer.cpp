@@ -21,6 +21,11 @@ typedef struct _qcap2_rcbuffer_priv_t {
     std::atomic<int32_t> use_count;
     std::atomic<int32_t> res_count;
     std::atomic<bool> resource_freed;
+
+    // --- New Extensibility Fields ---
+    qcap2_buffer_type_t buffer_type;
+    PVOID pNativeHandle;
+    qcap2_on_free_resource_t pOnFreeNativeHandle;
 } qcap2_rcbuffer_priv_t;
 
 // A simple internal definition to overlay on the opaque struct arrays.
@@ -97,6 +102,9 @@ static void qcap2_rcbuffer_release_resource(qcap2_rcbuffer_priv_t* p) {
     if (nResCount == 0) {
         bool bExpected = false;
         if (p->resource_freed.compare_exchange_strong(bExpected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            if (p->pOnFreeNativeHandle) {
+                p->pOnFreeNativeHandle(p->pNativeHandle);
+            }
             if (p->pOnFreeResource) {
                 p->pOnFreeResource(p->pData);
             }
@@ -108,7 +116,13 @@ static void qcap2_rcbuffer_release_resource(qcap2_rcbuffer_priv_t* p) {
 
 // --- qcap2_rcbuffer_t ---
 
-qcap2_rcbuffer_t* qcap2_rcbuffer_new(PVOID pData, qcap2_on_free_resource_t pOnFreeResource) {
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_ext(
+    PVOID pData,
+    qcap2_on_free_resource_t pOnFreeResource,
+    qcap2_buffer_type_t buffer_type,
+    PVOID pNativeHandle,
+    qcap2_on_free_resource_t pOnFreeNativeHandle
+) {
     qcap2_rcbuffer_priv_t* p = new (std::nothrow) qcap2_rcbuffer_priv_t();
     if (p) {
         p->pData = pData;
@@ -117,8 +131,29 @@ qcap2_rcbuffer_t* qcap2_rcbuffer_new(PVOID pData, qcap2_on_free_resource_t pOnFr
         p->use_count.store(1, std::memory_order_release);
         p->res_count.store(1, std::memory_order_release);
         p->resource_freed.store(false, std::memory_order_release);
+        p->buffer_type = buffer_type;
+        p->pNativeHandle = pNativeHandle;
+        p->pOnFreeNativeHandle = pOnFreeNativeHandle;
     }
     return (qcap2_rcbuffer_t*)p;
+}
+
+qcap2_rcbuffer_t* qcap2_rcbuffer_new(PVOID pData, qcap2_on_free_resource_t pOnFreeResource) {
+    return qcap2_rcbuffer_new_ext(pData, pOnFreeResource, QCAP2_BUFFER_TYPE_SYSTEM, NULL, NULL);
+}
+
+qcap2_buffer_type_t qcap2_rcbuffer_get_type(qcap2_rcbuffer_t* pRCBuffer) {
+    if (pRCBuffer) {
+        return ((qcap2_rcbuffer_priv_t*)pRCBuffer)->buffer_type;
+    }
+    return QCAP2_BUFFER_TYPE_SYSTEM;
+}
+
+PVOID qcap2_rcbuffer_get_native_handle(qcap2_rcbuffer_t* pRCBuffer) {
+    if (pRCBuffer) {
+        return ((qcap2_rcbuffer_priv_t*)pRCBuffer)->pNativeHandle;
+    }
+    return NULL;
 }
 
 void qcap2_rcbuffer_delete(qcap2_rcbuffer_t* pRCBuffer) {

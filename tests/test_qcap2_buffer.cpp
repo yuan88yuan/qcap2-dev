@@ -393,6 +393,34 @@ static void mock_v4l2_buffer_on_free(PVOID pData) {
     mock_requeue_slot(slot);
 }
 
+static void mock_native_handle_on_free(PVOID pNativeHandle) {
+    int* pVal = (int*)pNativeHandle;
+    (*pVal)++;
+}
+
+void test_qcap2_rcbuffer_ext() {
+    TestMyVideoFrame* video_frame = test_new_video_frame_with_buffers();
+    int native_handle_val = 0;
+
+    qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_ext(
+        &video_frame->av_frame,
+        TestMyVideoFrame::on_free_resource,
+        QCAP2_BUFFER_TYPE_CUDA,
+        &native_handle_val,
+        mock_native_handle_on_free
+    );
+
+    assert(rcbuf != NULL);
+    assert(qcap2_rcbuffer_get_type(rcbuf) == QCAP2_BUFFER_TYPE_CUDA);
+    assert(qcap2_rcbuffer_get_native_handle(rcbuf) == &native_handle_val);
+
+    qcap2_rcbuffer_release(rcbuf);
+
+    assert(native_handle_val == 1);
+    assert(video_frame->free_resource_count == 1);
+    delete video_frame;
+}
+
 void test_v4l2_reference_counting_and_pinning() {
     MockV4L2Slot slot;
     slot.index = 0;
@@ -450,6 +478,7 @@ int main() {
     test_qcap2_rcbuffer_new_av_packet();
     test_qcap2_av_frame_dmabuf();
     test_v4l2_reference_counting_and_pinning();
+    test_qcap2_rcbuffer_ext();
     printf("All tests passed!\n");
     return 0;
 }

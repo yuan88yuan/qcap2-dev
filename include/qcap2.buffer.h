@@ -8,8 +8,28 @@
 extern "C" {
 #endif /* __cplusplus */
 
+// qcap2_buffer_type_t
+typedef enum {
+    QCAP2_BUFFER_TYPE_SYSTEM = 0,
+    QCAP2_BUFFER_TYPE_DMABUF,
+    QCAP2_BUFFER_TYPE_V4L2,
+    QCAP2_BUFFER_TYPE_CUDA,
+    QCAP2_BUFFER_TYPE_NVBUF,
+    QCAP2_BUFFER_TYPE_AVFRAME,
+    QCAP2_BUFFER_TYPE_CUSTOM
+} qcap2_buffer_type_t;
+
 // qcap2_rcbuffer_t
 qcap2_rcbuffer_t* qcap2_rcbuffer_new(PVOID pData, qcap2_on_free_resource_t pOnFreeResource);
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_ext(
+    PVOID pData,
+    qcap2_on_free_resource_t pOnFreeResource,
+    qcap2_buffer_type_t buffer_type,
+    PVOID pNativeHandle,
+    qcap2_on_free_resource_t pOnFreeNativeHandle
+);
+qcap2_buffer_type_t qcap2_rcbuffer_get_type(qcap2_rcbuffer_t* pRCBuffer);
+PVOID qcap2_rcbuffer_get_native_handle(qcap2_rcbuffer_t* pRCBuffer);
 void qcap2_rcbuffer_delete(qcap2_rcbuffer_t* pRCBuffer);
 void qcap2_rcbuffer_to_buffer(qcap2_rcbuffer_t* pRCBuffer, BYTE** ppBuffer, ULONG* pBufferSize);
 qcap2_rcbuffer_t* qcap2_rcbuffer_cast(BYTE * pBuffer, ULONG nBufferLen);

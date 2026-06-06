@@ -139,3 +139,50 @@ delete pVideoFrame;              // releases the enclosing object and raw buffer
 - Do not clear or rewrite `pData` before invoking `pOnFreeResource`; `qcap2_container_of()` depends on the exact original address.
 - Do not call `qcap2_container_of()` unless the pointer is known to be the address of the specified member in the specified owner type.
 - Do not use `get_data()` as a lifetime pin; use `lock_data()`/`unlock_data()` for pinned access.
+
+## Hardware Acceleration and Extended APIs
+
+To support non-system buffer structures like dmabufs, CUDA memory, or V4L2 buffers, `qcap2_rcbuffer_t` can encapsulate third-party types natively while preserving pipeline agnostic recycling logic.
+
+### `qcap2_buffer_type_t` Enumeration
+
+You can tag an rc-buffer with an identifier for components to recognize zero-copy handles:
+
+- `QCAP2_BUFFER_TYPE_SYSTEM`: Standard system memory.
+- `QCAP2_BUFFER_TYPE_DMABUF`: Linux DMA Buffer.
+- `QCAP2_BUFFER_TYPE_V4L2`: V4L2 subsystem buffer.
+- `QCAP2_BUFFER_TYPE_CUDA`: Nvidia CUDA pointer.
+- `QCAP2_BUFFER_TYPE_NVBUF`: Jetson multimedia NVBuffer.
+- `QCAP2_BUFFER_TYPE_AVFRAME`: FFmpeg `AVFrame*`.
+- `QCAP2_BUFFER_TYPE_CUSTOM`: User-defined hardware struct.
+
+### Using the Extended Constructor
+
+```c
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_ext(
+    PVOID pData,
+    qcap2_on_free_resource_t pOnFreeResource,
+    qcap2_buffer_type_t buffer_type,
+    PVOID pNativeHandle,
+    qcap2_on_free_resource_t pOnFreeNativeHandle
+);
+```
+
+- `pData`: Functions as normal (e.g. `&pVideoFrame->av_frame`).
+- `buffer_type`: A valid `qcap2_buffer_type_t`.
+- `pNativeHandle`: The hardware-specific pointer (e.g. a `CUdeviceptr`).
+- `pOnFreeNativeHandle`: A callback that cleans up just `pNativeHandle` when the resource pins hit zero. It executes before `pOnFreeResource`.
+
+### Accessing Extensibility Metadata
+
+Components like a CUDA hardware encoder can query this data dynamically:
+
+```c
+qcap2_buffer_type_t type = qcap2_rcbuffer_get_type(pRCBuffer);
+if (type == QCAP2_BUFFER_TYPE_CUDA) {
+    CUdeviceptr pCudaMem = (CUdeviceptr)qcap2_rcbuffer_get_native_handle(pRCBuffer);
+    // Proceed with zero-copy encoding natively.
+}
+```
+
+*Note: Legacy components using the original `qcap2_rcbuffer_new()` will always query as `QCAP2_BUFFER_TYPE_SYSTEM` with a `NULL` native handle.*
