@@ -1,4 +1,4 @@
-#include "qcap2.buffer.h"
+#include "qcap2.buffer_priv.h"
 #include "qcap2.user.h"
 #include "qcap2.dmabuf.h"
 #include <string.h>
@@ -14,14 +14,6 @@
 extern "C" {
 #endif
 
-typedef struct _qcap2_rcbuffer_priv_t {
-    PVOID pData;
-    ULONG nDataSize;
-    qcap2_on_free_resource_t pOnFreeResource;
-    std::atomic<int32_t> use_count;
-    std::atomic<int32_t> res_count;
-    std::atomic<bool> resource_freed;
-} qcap2_rcbuffer_priv_t;
 
 // A simple internal definition to overlay on the opaque struct arrays.
 typedef struct _qcap2_av_frame_priv_t {
@@ -62,142 +54,119 @@ typedef struct _qcap2_av_packet_priv_t {
     bool bOwnsBuffer;
 } qcap2_av_packet_priv_t;
 
-static int32_t qcap2_atomic_inc_if_positive(std::atomic<int32_t>& value) {
-    int32_t n = value.load(std::memory_order_acquire);
-    while (n > 0) {
-        if (value.compare_exchange_weak(n, n + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            return n + 1;
-        }
-    }
-    return 0;
-}
-
-static int32_t qcap2_atomic_dec_if_positive(std::atomic<int32_t>& value) {
-    int32_t n = value.load(std::memory_order_acquire);
-    while (n > 0) {
-        if (value.compare_exchange_weak(n, n - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            return n - 1;
-        }
-    }
-    return -1;
-}
-
-static void qcap2_rcbuffer_maybe_delete(qcap2_rcbuffer_priv_t* p) {
-    if (p &&
-        p->use_count.load(std::memory_order_acquire) == 0 &&
-        p->res_count.load(std::memory_order_acquire) == 0) {
-        delete p;
-    }
-}
-
-static void qcap2_rcbuffer_release_resource(qcap2_rcbuffer_priv_t* p) {
-    if (!p) return;
-
-    int32_t nResCount = qcap2_atomic_dec_if_positive(p->res_count);
-    if (nResCount == 0) {
-        bool bExpected = false;
-        if (p->resource_freed.compare_exchange_strong(bExpected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            if (p->pOnFreeResource) {
-                p->pOnFreeResource(p->pData);
-            }
-        }
-    }
-
-    qcap2_rcbuffer_maybe_delete(p);
-}
-
-// --- qcap2_rcbuffer_t ---
-
 qcap2_rcbuffer_t* qcap2_rcbuffer_new(PVOID pData, qcap2_on_free_resource_t pOnFreeResource) {
-    qcap2_rcbuffer_priv_t* p = new (std::nothrow) qcap2_rcbuffer_priv_t();
-    if (p) {
-        p->pData = pData;
-        p->nDataSize = 0;
-        p->pOnFreeResource = pOnFreeResource;
-        p->use_count.store(1, std::memory_order_release);
-        p->res_count.store(1, std::memory_order_release);
-        p->resource_freed.store(false, std::memory_order_release);
-    }
-    return (qcap2_rcbuffer_t*)p;
+    return new (std::nothrow) qcap2_system_buffer(pData, 0, pOnFreeResource);
 }
 
 void qcap2_rcbuffer_delete(qcap2_rcbuffer_t* pRCBuffer) {
-    qcap2_rcbuffer_release(pRCBuffer);
+    if (pRCBuffer) {
+        pRCBuffer->release();
+    }
 }
 
 void qcap2_rcbuffer_to_buffer(qcap2_rcbuffer_t* pRCBuffer, BYTE** ppBuffer, ULONG* pBufferSize) {
     if (ppBuffer) *ppBuffer = NULL;
     if (pBufferSize) *pBufferSize = 0;
-
     if (pRCBuffer) {
-        qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)pRCBuffer;
-        if (ppBuffer) *ppBuffer = (BYTE*)p->pData;
-        if (pBufferSize) *pBufferSize = p->nDataSize;
+        if (ppBuffer) *ppBuffer = (BYTE*)pRCBuffer->get_data();
+        if (pBufferSize) *pBufferSize = pRCBuffer->get_size();
     }
 }
 
 qcap2_rcbuffer_t* qcap2_rcbuffer_cast(BYTE * pBuffer, ULONG nBufferLen) {
-    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)qcap2_rcbuffer_new(pBuffer, NULL);
-    if (p) {
-        p->nDataSize = nBufferLen;
-    }
-    return (qcap2_rcbuffer_t*)p;
+    if (!pBuffer || nBufferLen == 0) return NULL;
+    return new (std::nothrow) qcap2_system_buffer(pBuffer, nBufferLen, NULL);
 }
 
 void qcap2_rcbuffer_add_ref(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)pRCBuffer;
-        qcap2_atomic_inc_if_positive(p->use_count);
-    }
+    if (pRCBuffer) pRCBuffer->add_ref();
 }
 
 void qcap2_rcbuffer_release(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)pRCBuffer;
-        int32_t nUseCount = qcap2_atomic_dec_if_positive(p->use_count);
-        if (nUseCount == 0) {
-            qcap2_rcbuffer_release_resource(p);
-        }
-    }
+    if (pRCBuffer) pRCBuffer->release();
 }
 
 PVOID qcap2_rcbuffer_lock_data(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)pRCBuffer;
-        if (!p->resource_freed.load(std::memory_order_acquire) &&
-            qcap2_atomic_inc_if_positive(p->res_count) > 0) {
-            return p->pData;
-        }
-    }
-    return NULL;
+    return pRCBuffer ? pRCBuffer->lock_data() : NULL;
 }
 
 void qcap2_rcbuffer_unlock_data(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        qcap2_rcbuffer_release_resource((qcap2_rcbuffer_priv_t*)pRCBuffer);
-    }
+    if (pRCBuffer) pRCBuffer->unlock_data();
 }
 
 PVOID qcap2_rcbuffer_get_data(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        return ((qcap2_rcbuffer_priv_t*)pRCBuffer)->pData;
-    }
-    return NULL;
+    return pRCBuffer ? pRCBuffer->get_data() : NULL;
 }
 
 int32_t qcap2_rcbuffer_use_count(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        return ((qcap2_rcbuffer_priv_t*)pRCBuffer)->use_count.load(std::memory_order_acquire);
-    }
-    return 0;
+    return pRCBuffer ? pRCBuffer->use_count() : 0;
 }
 
 int32_t qcap2_rcbuffer_res_count(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        return ((qcap2_rcbuffer_priv_t*)pRCBuffer)->res_count.load(std::memory_order_acquire);
-    }
-    return 0;
+    return pRCBuffer ? pRCBuffer->res_count() : 0;
 }
+
+qcap2_buffer_type_t qcap2_rcbuffer_get_type(qcap2_rcbuffer_t* pRCBuffer) {
+    return pRCBuffer ? pRCBuffer->get_type() : QCAP2_BUFFER_TYPE_SYSTEM;
+}
+
+PVOID qcap2_rcbuffer_get_native_handle(qcap2_rcbuffer_t* pRCBuffer) {
+    return pRCBuffer ? pRCBuffer->get_native_handle() : NULL;
+}
+
+QRESULT qcap2_rcbuffer_get_pts(qcap2_rcbuffer_t* pRCBuffer, int64_t* pts) {
+    return pRCBuffer ? pRCBuffer->get_pts(pts) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_set_pts(qcap2_rcbuffer_t* pRCBuffer, int64_t pts) {
+    return pRCBuffer ? pRCBuffer->set_pts(pts) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_get_dts(qcap2_rcbuffer_t* pRCBuffer, int64_t* dts) {
+    return pRCBuffer ? pRCBuffer->get_dts(dts) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_set_dts(qcap2_rcbuffer_t* pRCBuffer, int64_t dts) {
+    return pRCBuffer ? pRCBuffer->set_dts(dts) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_get_stream_index(qcap2_rcbuffer_t* pRCBuffer, int* idx) {
+    return pRCBuffer ? pRCBuffer->get_stream_index(idx) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_set_stream_index(qcap2_rcbuffer_t* pRCBuffer, int idx) {
+    return pRCBuffer ? pRCBuffer->set_stream_index(idx) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_is_keyframe(qcap2_rcbuffer_t* pRCBuffer, BOOL* key) {
+    return pRCBuffer ? pRCBuffer->is_keyframe(key) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_set_keyframe(qcap2_rcbuffer_t* pRCBuffer, BOOL key) {
+    return pRCBuffer ? pRCBuffer->set_keyframe(key) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_get_data_ptr(qcap2_rcbuffer_t* pRCBuffer, uint8_t** data, int* size) {
+    return pRCBuffer ? pRCBuffer->get_data_ptr(data, size) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_get_video_property(qcap2_rcbuffer_t* pRCBuffer, ULONG* colorspace, ULONG* width, ULONG* height) {
+    return pRCBuffer ? pRCBuffer->get_video_property(colorspace, width, height) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_get_plane(qcap2_rcbuffer_t* pRCBuffer, int plane, uint8_t** data, int* stride) {
+    return pRCBuffer ? pRCBuffer->get_plane(plane, data, stride) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_map_system_memory(qcap2_rcbuffer_t* pRCBuffer, PVOID* ppDataOut) {
+    return pRCBuffer ? pRCBuffer->map_system_memory(ppDataOut) : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+QRESULT qcap2_rcbuffer_unmap_system_memory(qcap2_rcbuffer_t* pRCBuffer) {
+    return pRCBuffer ? pRCBuffer->unmap_system_memory() : QCAP_RS_ERROR_INVALID_PARAMETER;
+}
+
+
 
 // --- qcap2_av_frame_t ---
 
