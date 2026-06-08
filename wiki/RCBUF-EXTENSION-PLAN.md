@@ -1,253 +1,441 @@
-# rcbuf Extensibility Improvement Plan
+# rcbuf 擴充性修正計畫（無 legacy 約束版）
 
-## 1. Background & Motivation
-Currently, [qcap2_rcbuffer_t](file:///home/zzlee/qcap2-dev/include/qcap2.types.h#L37) is a reference-counted buffer wrapper used throughout the pipeline. The implementation is based on a C struct storing a generic `PVOID pData` along with a free callback. Internal consumers cast `pData` to specific structs like [qcap2_av_frame_t](file:///home/zzlee/qcap2-dev/include/qcap2.types.h#L71) or [qcap2_av_packet_t](file:///home/zzlee/qcap2-dev/include/qcap2.types.h#L75). This requires type-specific free functions and switch statements, making it difficult to extend the pipeline with hardware-accelerated buffers (e.g., CUDA memory, dmabufs, Jetson nvbufs).
+## 1. 重新分析後的結論
 
-To improve extensibility, we propose refactoring [qcap2_rcbuffer_t](file:///home/zzlee/qcap2-dev/include/qcap2.types.h#L37) to use a C++ virtual interface internally while **exposing a pure C interface in the public headers**. This avoids exposing C++-specific constructs (like classes, virtual methods, or inheritance) to C callers, satisfying the requirement to maintain a clean C interface.
+此專案仍在開發階段，沒有 ABI/API legacy 需要維持，因此應把 `qcap2_rcbuffer_t` 設計成 media pipeline 的穩定 buffer 抽象，而不是維持目前「ref-counted `void*` + direct cast」模式。
 
-## 2. Goals
-*   **Public C Interface**: The public header [qcap2.buffer.h](file:///home/zzlee/qcap2-dev/include/qcap2.buffer.h) must expose only C-compatible constructs (opaque pointers, enum tags, and C wrapper functions). No C++ virtual classes are to be exposed directly to users.
-*   **Internal C++ Polymorphism**: Internally (in `src/`), the buffer is represented by a C++ virtual base class and concrete subclasses (`qcap2_system_buffer`, `qcap2_avpacket_buffer`, etc.) to eliminate switch statements and type casting.
-*   **Zero-Copy Support**: Enable retrieving underlying native hardware handles (e.g. `CUdeviceptr`, `NvBufSurface*`) directly via the C/C++ interface.
-*   **Pointer Identity Backward Compatibility**: Maintain the key memory-layout rule where [qcap2_rcbuffer_get_data](file:///home/zzlee/qcap2-dev/include/qcap2.buffer.h#L20) returns the exact borrowed identity pointer passed to [qcap2_rcbuffer_new](file:///home/zzlee/qcap2-dev/include/qcap2.buffer.h#L12) (supporting the `qcap2_container_of` pattern described in [RCBUF.md](file:///home/zzlee/qcap2-dev/wiki/RCBUF.md)).
+針對 `qcap2_rcbuffer_lock_data()` / `qcap2_rcbuffer_unlock_data()`、`qcap2_rcbuffer_get_data()` 與 `qcap2_container_of()` 的必要性，結論如下：
 
-## 3. Architecture
+| 現有機制 | 是否必要 | 修正方向 |
+|---|---:|---|
+| `qcap2_rcbuffer_lock_data()` / `unlock_data()` | **名稱與 raw-pointer 語意不必要**；但「access scope」必要 | 移除或不推薦 `lock_data`。改成 `qcap2_rcbuffer_begin_access()` / `qcap2_rcbuffer_end_access()`，負責 lifetime pin、map/unmap、sync、capability negotiation。 |
+| `qcap2_rcbuffer_get_data()` | **不必要，且會妨礙擴充性** | 移除 public payload accessor。改用 typed media views、native handles、metadata API。 |
+| `qcap2_container_of()` for rcbuf owner recovery | **不必要，且高風險** | rcbuf 建立時明確提供 `owner` / `user_data` / destroy callback，不用 embedded-member pointer + offset 回推 owner。 |
 
-### 3.1. Public C Interface (`include/qcap2.buffer.h`)
-The public header [qcap2.buffer.h](file:///home/zzlee/qcap2-dev/include/qcap2.buffer.h) remains a C-compatible header wrapped in `extern "C"`. It declares [qcap2_rcbuffer_t](file:///home/zzlee/qcap2-dev/include/qcap2.types.h#L37) as an opaque pointer:
+最重要的設計修正：
+
+> `qcap2_rcbuffer_t` 不應暴露「資料其實是一個 `qcap2_av_frame_t*` 或 `qcap2_av_packet_t*`」這種假設。  
+> media pipeline 應只依賴 rcbuf 的 **content type、memory type、capability、view、native handle**。
+
+---
+
+## 2. 為什麼不應保留 `get_data()` / direct cast
+
+目前 pipeline 常見寫法是：
 
 ```c
-// include/qcap2.buffer.h
-#include "qcap2.types.h"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// Opaque struct type (typedef in qcap2.types.h)
-// typedef struct qcap2_rcbuffer_t qcap2_rcbuffer_t;
-
-// --- Lifecycle APIs ---
-qcap2_rcbuffer_t* qcap2_rcbuffer_new(PVOID pData, qcap2_on_free_resource_t pOnFreeResource);
-void qcap2_rcbuffer_delete(qcap2_rcbuffer_t* pRCBuffer);
-void qcap2_rcbuffer_add_ref(qcap2_rcbuffer_t* pRCBuffer);
-void qcap2_rcbuffer_release(qcap2_rcbuffer_t* pRCBuffer);
-PVOID qcap2_rcbuffer_lock_data(qcap2_rcbuffer_t* pRCBuffer);
-void qcap2_rcbuffer_unlock_data(qcap2_rcbuffer_t* pRCBuffer);
-PVOID qcap2_rcbuffer_get_data(qcap2_rcbuffer_t* pRCBuffer);
-int32_t qcap2_rcbuffer_use_count(qcap2_rcbuffer_t* pRCBuffer);
-int32_t qcap2_rcbuffer_res_count(qcap2_rcbuffer_t* pRCBuffer);
-
-// --- Buffer Tagging & Native Handles ---
-typedef enum {
-    QCAP2_BUFFER_TYPE_SYSTEM = 0,
-    QCAP2_BUFFER_TYPE_DMABUF,
-    QCAP2_BUFFER_TYPE_V4L2,
-    QCAP2_BUFFER_TYPE_CUDA,
-    QCAP2_BUFFER_TYPE_NVBUF,
-    QCAP2_BUFFER_TYPE_AVFRAME,
-    QCAP2_BUFFER_TYPE_AVPACKET,
-    QCAP2_BUFFER_TYPE_CUSTOM
-} qcap2_buffer_type_t;
-
-qcap2_buffer_type_t qcap2_rcbuffer_get_type(qcap2_rcbuffer_t* pRCBuffer);
-PVOID qcap2_rcbuffer_get_native_handle(qcap2_rcbuffer_t* pRCBuffer);
-
-// --- Extended Buffer Metadata & Accessors ---
-QRESULT qcap2_rcbuffer_get_pts(qcap2_rcbuffer_t* pRCBuffer, int64_t* pts);
-QRESULT qcap2_rcbuffer_set_pts(qcap2_rcbuffer_t* pRCBuffer, int64_t pts);
-QRESULT qcap2_rcbuffer_get_dts(qcap2_rcbuffer_t* pRCBuffer, int64_t* dts);
-QRESULT qcap2_rcbuffer_set_dts(qcap2_rcbuffer_t* pRCBuffer, int64_t dts);
-QRESULT qcap2_rcbuffer_get_stream_index(qcap2_rcbuffer_t* pRCBuffer, int* idx);
-QRESULT qcap2_rcbuffer_set_stream_index(qcap2_rcbuffer_t* pRCBuffer, int idx);
-QRESULT qcap2_rcbuffer_is_keyframe(qcap2_rcbuffer_t* pRCBuffer, BOOL* key);
-QRESULT qcap2_rcbuffer_set_keyframe(qcap2_rcbuffer_t* pRCBuffer, BOOL key);
-
-// --- Frame/Raw Data Properties ---
-QRESULT qcap2_rcbuffer_get_data_ptr(qcap2_rcbuffer_t* pRCBuffer, uint8_t** data, int* size);
-QRESULT qcap2_rcbuffer_get_video_property(qcap2_rcbuffer_t* pRCBuffer, ULONG* colorspace, ULONG* width, ULONG* height);
-QRESULT qcap2_rcbuffer_get_plane(qcap2_rcbuffer_t* pRCBuffer, int plane, uint8_t** data, int* stride);
-
-// --- Hardware memory mapping ---
-QRESULT qcap2_rcbuffer_map_system_memory(qcap2_rcbuffer_t* pRCBuffer, PVOID* ppDataOut);
-QRESULT qcap2_rcbuffer_unmap_system_memory(qcap2_rcbuffer_t* pRCBuffer);
-
-#ifdef __cplusplus
-}
-#endif
+PVOID data = qcap2_rcbuffer_lock_data(buf);
+qcap2_av_frame_t* frame = (qcap2_av_frame_t*)data;
+// use frame fields / helper functions
+qcap2_rcbuffer_unlock_data(buf);
 ```
 
-### 3.2. Private C++ Class Hierarchy (`src/qcap2.buffer_priv.h`)
-The C++ base class is defined internally in a private header (invisible to public C users). In C++, the struct [qcap2_rcbuffer_t](file:///home/zzlee/qcap2-dev/include/qcap2.types.h#L37) is declared as a C++ base class:
+這個模式只適合 system-memory struct payload，對下列 buffer type 會變成錯誤抽象：
 
-```cpp
-// src/qcap2.buffer_priv.h
-#pragma once
-#include "qcap2.buffer.h"
-#include <atomic>
+- dmabuf：payload 的本質是 fd、offset、stride、map/sync 狀態，不是單純 CPU pointer。
+- CUDA device memory：payload 可能完全不能 CPU dereference。
+- NvBufSurface：payload 是 native surface object，CPU access 需要 map/sync，device access 需要另一套 handle。
+- V4L2 buffer slot：payload 常常是 driver queue slot，free 行為可能是 requeue，而不是 delete。
 
-struct qcap2_rcbuffer_t {
-protected:
-    std::atomic<int32_t> use_count_{1};
-    std::atomic<int32_t> res_count_{1};
-    std::atomic<bool> resource_freed_{false};
+若保留 `get_data()`，component 很容易繼續寫出：
 
-    virtual ~qcap2_rcbuffer_t() = default;
-    virtual void on_release_resource() = 0;
+```c
+qcap2_av_frame_t* f = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(buf);
+```
 
-public:
-    void add_ref();
-    void release();
-    int32_t use_count() const;
-    int32_t res_count() const;
-    PVOID lock_data();
-    void unlock_data();
+這會把 rcbuf 的抽象固定在「某個 C struct pointer」，使 dmabuf / cuda / nvbuf 後端必須偽裝成 `qcap2_av_frame_t`，最後又回到大量 type check、side-channel getter、特殊分支。
 
-    // Virtual interfaces overridden by concrete backends
-    virtual PVOID get_data() const = 0;
-    virtual qcap2_buffer_type_t get_type() const = 0;
-    virtual PVOID get_native_handle() const = 0;
+因此無 legacy 約束下，`get_data()` 應從 public media API 移除。若內部 backend 需要 private payload，可存在於 private implementation，不應暴露給 component / user hot path。
 
-    virtual QRESULT get_pts(int64_t* pts) = 0;
-    virtual QRESULT set_pts(int64_t pts) = 0;
-    virtual QRESULT get_dts(int64_t* dts) = 0;
-    virtual QRESULT set_dts(int64_t dts) = 0;
-    virtual QRESULT get_stream_index(int* idx) = 0;
-    virtual QRESULT set_stream_index(int idx) = 0;
-    virtual QRESULT is_keyframe(BOOL* key) = 0;
-    virtual QRESULT set_keyframe(BOOL key) = 0;
+---
 
-    virtual QRESULT get_data_ptr(uint8_t** data, int* size) = 0;
-    virtual QRESULT get_video_property(ULONG* colorspace, ULONG* width, ULONG* height) = 0;
-    virtual QRESULT get_plane(int plane, uint8_t** data, int* stride) = 0;
+## 3. 為什麼不應依賴 `container_of()`
 
-    virtual QRESULT map_system_memory(PVOID* ppDataOut) { return QCAP_RS_ERROR_NOT_SUPPORTED; }
-    virtual QRESULT unmap_system_memory() { return QCAP_RS_ERROR_NOT_SUPPORTED; }
+`container_of()` 的用途是讓 free callback 從 embedded member pointer 回推 owner：
+
+```c
+struct MyFrameOwner {
+	int index;
+	qcap2_av_frame_t frame;
 };
-```
 
-Reference counting implementation in the base class:
-```cpp
-void qcap2_rcbuffer_t::add_ref() {
-    use_count_.fetch_add(1, std::memory_order_relaxed);
-}
+qcap2_rcbuffer_new(&owner->frame, on_free);
 
-void qcap2_rcbuffer_t::release() {
-    if (use_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        // Decrease res_count; when both are 0, free resource and delete
-        int32_t r = res_count_.fetch_sub(1, std::memory_order_acq_rel);
-        if (r == 1) {
-            bool expected = false;
-            if (resource_freed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-                on_release_resource();
-            }
-            delete this;
-        }
-    }
+static void on_free(PVOID pData) {
+	MyFrameOwner* owner = qcap2_container_of(pData, MyFrameOwner, frame);
+	// cleanup owner
 }
 ```
 
-### 3.3. C-to-C++ Forwarding Layer (`src/qcap2.buffer.cpp`)
-All public C APIs are defined in [qcap2.buffer.cpp](file:///home/zzlee/qcap2-dev/src/qcap2.buffer.cpp) and forward their operations to the C++ base class virtual methods via casting:
+這種模式有幾個問題：
 
-```cpp
-// src/qcap2.buffer.cpp
-#include "qcap2.buffer_priv.h"
+1. **pointer identity 變成 API contract**：rcbuf 必須永遠保存 embedded member address，不能重包裝、不能轉換 payload。
+2. **owner recovery 隱含且脆弱**：只要傳錯 member、struct layout 變動、或 pData 不是該 member，就會 memory corruption。
+3. **硬體 buffer 不自然**：dmabuf / CUDA / NvBufSurface 的 owner 通常是 allocator、driver slot、surface pool 或 backend object，不一定有一個可公開的 embedded `qcap2_av_frame_t` member。
+4. **阻礙 C API 清晰化**：callback 應直接拿到明確的 `owner` / `user_data`，而不是靠 offset 推導。
 
-extern "C" {
+替代設計：
 
-void qcap2_rcbuffer_add_ref(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) pRCBuffer->add_ref();
-}
+```c
+typedef void (*qcap2_rcbuffer_destroy_t)(void* owner, void* user_data);
 
-void qcap2_rcbuffer_release(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) pRCBuffer->release();
-}
+typedef struct qcap2_rcbuffer_create_info_t {
+	size_t cb;
+	void* owner;             // explicit owner object / slot / allocation
+	void* user_data;         // callback context
+	qcap2_rcbuffer_destroy_t destroy;
+	const qcap2_rcbuffer_ops_t* ops;
+} qcap2_rcbuffer_create_info_t;
+```
 
-PVOID qcap2_rcbuffer_get_data(qcap2_rcbuffer_t* pRCBuffer) {
-    return pRCBuffer ? pRCBuffer->get_data() : NULL;
-}
+free/recycle 時：
 
-qcap2_buffer_type_t qcap2_rcbuffer_get_type(qcap2_rcbuffer_t* pRCBuffer) {
-    return pRCBuffer ? pRCBuffer->get_type() : QCAP2_BUFFER_TYPE_SYSTEM;
-}
-
-PVOID qcap2_rcbuffer_get_native_handle(qcap2_rcbuffer_t* pRCBuffer) {
-    return pRCBuffer ? pRCBuffer->get_native_handle() : NULL;
-}
-
-QRESULT qcap2_rcbuffer_get_pts(qcap2_rcbuffer_t* pRCBuffer, int64_t* pts) {
-    if (!pRCBuffer) return QCAP_RS_ERROR_INVALID_PARAMETER;
-    return pRCBuffer->get_pts(pts);
-}
-
-// ... other forwarding functions ...
+```c
+if (destroy) {
+	destroy(owner, user_data);
 }
 ```
 
-### 3.4. Private Modular Headers & Concrete Subclasses
-Private subclasses exist in the `src/backends/` directory (or internally in `src/`) and are never exposed in public headers:
+這比 `container_of()` 更明確、安全，也不限制 payload representation。
 
-*   **System Memory Subclass (`qcap2_system_buffer`)**
-    Wraps standard system buffers. Implements `get_data()` to return the original borrowed identity pointer to support `qcap2_container_of` patterns described in [RCBUF.md](file:///home/zzlee/qcap2-dev/wiki/RCBUF.md).
-*   **FFmpeg AVPacket Subclass (`qcap2_avpacket_buffer`)**
-    Wraps an `AVPacket*` and extracts packet metadata dynamically.
-*   **FFmpeg AVFrame Subclass (`qcap2_avframe_buffer`)**
-    Wraps an `AVFrame*`.
-*   **CUDA Memory Subclass (`qcap2_cuda_buffer`)**
-    Wraps a `CUdeviceptr` and overrides `map_system_memory` and `unmap_system_memory`.
+> `qcap2_container_of()` 可以作為一般 utility macro 留在專案中，但不應是 rcbuf owner lifecycle 的必要機制。
 
-Internally, downcasting is performed safely using helper inline functions:
-```cpp
-inline qcap2_avpacket_buffer* qcap2_buffer_to_avpacket(qcap2_rcbuffer_t* buf) {
-    return (buf && buf->get_type() == QCAP2_BUFFER_TYPE_AVPACKET) 
-        ? static_cast<qcap2_avpacket_buffer*>(buf) : nullptr;
-}
+---
+
+## 4. `lock_data()` / `unlock_data()` 的重新定位
+
+### 4.1 目前 `lock_data()` 真正提供的是 resource pin
+
+目前 implementation 中，`lock_data()` 做了兩件事：
+
+1. 增加 `res_count`，避免最後一個 `release()` 立刻 free/recycle resource。
+2. 回傳 `pData`。
+
+其中第 1 件事仍然重要；第 2 件事不應保留為通用 API。
+
+在 media pipeline 中，component access buffer 時需要一個明確 scope：
+
+- system memory：取得 CPU plane pointer。
+- dmabuf：可能要 `mmap()` / sync for CPU。
+- NvBufSurface：可能要 `NvBufSurfaceMap()` / `SyncForCpu()`。
+- CUDA：可能要取得 device pointer / EGL frame，或拒絕 CPU access。
+- V4L2：access 期間不得 requeue slot。
+
+這不是「lock data pointer」，而是「begin an access session」。
+
+### 4.2 建議移除 `lock_data()`，改為 begin/end access
+
+```c
+typedef enum qcap2_rcbuffer_access_flag_t {
+	QCAP2_RCBUFFER_ACCESS_READ       = 1u << 0,
+	QCAP2_RCBUFFER_ACCESS_WRITE      = 1u << 1,
+	QCAP2_RCBUFFER_ACCESS_CPU        = 1u << 2,
+	QCAP2_RCBUFFER_ACCESS_DEVICE     = 1u << 3,
+	QCAP2_RCBUFFER_ACCESS_ZERO_COPY  = 1u << 4,
+} qcap2_rcbuffer_access_flag_t;
+
+typedef struct qcap2_rcbuffer_access_t {
+	size_t cb;
+	uint32_t requested_flags;
+	uint32_t granted_flags;
+	uint32_t memory_flags;
+	void* backend_state;        // opaque map/sync token
+} qcap2_rcbuffer_access_t;
+
+QRESULT qcap2_rcbuffer_begin_access(
+	qcap2_rcbuffer_t* buf,
+	uint32_t flags,
+	qcap2_rcbuffer_access_t* access);
+
+void qcap2_rcbuffer_end_access(
+	qcap2_rcbuffer_t* buf,
+	qcap2_rcbuffer_access_t* access);
+```
+
+`begin_access()` 的語意：
+
+- 成功後 resource 在 `end_access()` 前不可被 destroy/recycle。
+- 根據 flags 做 map/sync/handle preparation。
+- 若 backend 不支援要求能力，回傳 `QCAP_RS_ERROR_NON_SUPPORT`。
+- 不直接回傳 untyped `void*`。
+
+`end_access()` 的語意：
+
+- 做 unmap/sync-for-device/cleanup。
+- 釋放 access pin。
+
+如此即可保留 `res_count` 的價值，但避免 `lock_data()` 暗示「一定有一個可 cast 的 data pointer」。
+
+---
+
+## 5. 新 rcbuf 應暴露的抽象
+
+### 5.1 Content / memory / capability query
+
+```c
+typedef enum qcap2_rcbuffer_content_type_t {
+	QCAP2_RCBUFFER_CONTENT_UNKNOWN = 0,
+	QCAP2_RCBUFFER_CONTENT_RAW_BYTES,
+	QCAP2_RCBUFFER_CONTENT_VIDEO_FRAME,
+	QCAP2_RCBUFFER_CONTENT_AUDIO_FRAME,
+	QCAP2_RCBUFFER_CONTENT_PACKET,
+	QCAP2_RCBUFFER_CONTENT_CUSTOM,
+} qcap2_rcbuffer_content_type_t;
+
+typedef enum qcap2_rcbuffer_memory_type_t {
+	QCAP2_RCBUFFER_MEMORY_SYSTEM       = 1u << 0,
+	QCAP2_RCBUFFER_MEMORY_DMABUF       = 1u << 1,
+	QCAP2_RCBUFFER_MEMORY_CUDA_DEVICE  = 1u << 2,
+	QCAP2_RCBUFFER_MEMORY_CUDA_HOST    = 1u << 3,
+	QCAP2_RCBUFFER_MEMORY_CUDA_MANAGED = 1u << 4,
+	QCAP2_RCBUFFER_MEMORY_NVBUF        = 1u << 5,
+	QCAP2_RCBUFFER_MEMORY_V4L2         = 1u << 6,
+	QCAP2_RCBUFFER_MEMORY_CUSTOM       = 1u << 31,
+} qcap2_rcbuffer_memory_type_t;
+
+typedef enum qcap2_rcbuffer_capability_t {
+	QCAP2_RCBUFFER_CAP_CPU_READ        = 1u << 0,
+	QCAP2_RCBUFFER_CAP_CPU_WRITE       = 1u << 1,
+	QCAP2_RCBUFFER_CAP_VIDEO_PLANES    = 1u << 2,
+	QCAP2_RCBUFFER_CAP_PACKET_BYTES    = 1u << 3,
+	QCAP2_RCBUFFER_CAP_NATIVE_HANDLE   = 1u << 4,
+	QCAP2_RCBUFFER_CAP_DEVICE_SYNC     = 1u << 5,
+	QCAP2_RCBUFFER_CAP_ZERO_COPY       = 1u << 6,
+} qcap2_rcbuffer_capability_t;
+
+typedef struct qcap2_rcbuffer_info_t {
+	size_t cb;
+	qcap2_rcbuffer_content_type_t content_type;
+	uint32_t memory_flags;
+	uint32_t capability_flags;
+	void* owner;
+} qcap2_rcbuffer_info_t;
+
+QRESULT qcap2_rcbuffer_query(qcap2_rcbuffer_t* buf, qcap2_rcbuffer_info_t* info);
+```
+
+### 5.2 Typed media views
+
+```c
+typedef struct qcap2_rcbuffer_video_info_t {
+	size_t cb;
+	ULONG color_space_type;
+	ULONG width;
+	ULONG height;
+	int field_type;
+	int64_t pts;
+	double sample_time;
+	int plane_count;
+} qcap2_rcbuffer_video_info_t;
+
+typedef struct qcap2_rcbuffer_plane_t {
+	size_t cb;
+	uint8_t* data;       // valid only when CPU access was granted
+	int stride;
+	size_t size;
+	int fd;              // valid for dmabuf-like plane, else -1
+	uintptr_t offset;
+	void* native_handle;
+} qcap2_rcbuffer_plane_t;
+
+typedef struct qcap2_rcbuffer_packet_info_t {
+	size_t cb;
+	int stream_index;
+	BOOL is_keyframe;
+	int64_t pts;
+	int64_t dts;
+	double sample_time;
+	uint8_t* data;       // valid only when CPU access was granted
+	int size;
+} qcap2_rcbuffer_packet_info_t;
+
+QRESULT qcap2_rcbuffer_get_video_info(qcap2_rcbuffer_t* buf, qcap2_rcbuffer_video_info_t* info);
+QRESULT qcap2_rcbuffer_set_video_info(qcap2_rcbuffer_t* buf, const qcap2_rcbuffer_video_info_t* info);
+QRESULT qcap2_rcbuffer_get_plane(qcap2_rcbuffer_t* buf, int plane, qcap2_rcbuffer_plane_t* out);
+QRESULT qcap2_rcbuffer_get_packet_info(qcap2_rcbuffer_t* buf, qcap2_rcbuffer_packet_info_t* info);
+QRESULT qcap2_rcbuffer_set_packet_info(qcap2_rcbuffer_t* buf, const qcap2_rcbuffer_packet_info_t* info);
+```
+
+### 5.3 Typed native handles
+
+```c
+typedef enum qcap2_rcbuffer_handle_type_t {
+	QCAP2_RCBUFFER_HANDLE_DMABUF_FD = 1,
+	QCAP2_RCBUFFER_HANDLE_CUDA_DEVICE_PTR,
+	QCAP2_RCBUFFER_HANDLE_CUDA_GRAPHICS_RESOURCE,
+	QCAP2_RCBUFFER_HANDLE_CUDA_EGL_FRAME,
+	QCAP2_RCBUFFER_HANDLE_NVBUF_SURFACE,
+	QCAP2_RCBUFFER_HANDLE_V4L2_BUFFER_INDEX,
+	QCAP2_RCBUFFER_HANDLE_CUSTOM = 1000,
+} qcap2_rcbuffer_handle_type_t;
+
+typedef struct qcap2_rcbuffer_handle_t {
+	size_t cb;
+	qcap2_rcbuffer_handle_type_t type;
+	union {
+		int fd;
+		int index;
+		uintptr_t value;
+		void* ptr;
+	} u;
+	size_t size;
+} qcap2_rcbuffer_handle_t;
+
+QRESULT qcap2_rcbuffer_get_handle(
+	qcap2_rcbuffer_t* buf,
+	qcap2_rcbuffer_handle_type_t type,
+	qcap2_rcbuffer_handle_t* out);
 ```
 
 ---
 
-## 4. Codebase Progress Verification
+## 6. 建議新的 construction API
 
-Checking the actual files in this repository reveals that **none of the migration steps have been started**. The previous draft of the plan stated that the demuxer, muxer, and portions of processing/utilities were already ported. This is **incorrect**:
+取代：
 
-*   [include/qcap2.buffer.h](file:///home/zzlee/qcap2-dev/include/qcap2.buffer.h): Still contains the legacy C functions and has no classes or new getters.
-*   [qcap2.buffer.cpp](file:///home/zzlee/qcap2-dev/src/qcap2.buffer.cpp): Still defines the C struct `_qcap2_rcbuffer_priv_t` and `_qcap2_av_frame_priv_t` with no virtual methods or subclasses.
-*   [qcap2.demuxer.cpp](file:///home/zzlee/qcap2-dev/src/qcap2.demuxer.cpp): Still creates buffers with `qcap2_rcbuffer_new()` and manages lifetime manually.
-*   [qcap2.muxer.cpp](file:///home/zzlee/qcap2-dev/src/qcap2.muxer.cpp): Still uses `qcap2_rcbuffer_lock_data()` and expects legacy frame layout structures.
-*   **Tests** in [tests/test_qcap2_buffer.cpp](file:///home/zzlee/qcap2-dev/tests/test_qcap2_buffer.cpp): Still compile and run successfully asserting the behavior of the old C structs.
+```c
+qcap2_rcbuffer_new(PVOID pData, qcap2_on_free_resource_t cb);
+```
 
-### Progress Table
+改為：
 
-| Component | Status | Description |
-|---|---|---|
-| **Define Base Class & Subclasses** | ❌ Not Started | Core polymorphism architecture needs to be written. |
-| **Port Demuxer & Muxer** | ❌ Not Started | Uses the legacy callbacks and struct-casting patterns. |
-| **Port Processing** | ❌ Not Started | Encoders/decoders still cast `PVOID` to `qcap2_av_frame_t`. |
-| **Port Utility Files** | ❌ Not Started | `sync.cpp`, `utils.cpp`, etc., still use old locking APIs. |
-| **Remove Old Types** | ❌ Not Started | `qcap2_av_frame_t` is still declared in `qcap2.types.h`. |
-| **Update Tests** | ❌ Not Started | Unit tests are based entirely on the legacy interface. |
+```c
+typedef struct qcap2_rcbuffer_ops_t qcap2_rcbuffer_ops_t;
+
+typedef void (*qcap2_rcbuffer_destroy_t)(void* owner, void* user_data);
+
+typedef struct qcap2_rcbuffer_create_info_t {
+	size_t cb;
+	void* owner;
+	void* user_data;
+	qcap2_rcbuffer_destroy_t destroy;
+
+	qcap2_rcbuffer_content_type_t content_type;
+	uint32_t memory_flags;
+	uint32_t capability_flags;
+
+	const qcap2_rcbuffer_ops_t* ops;
+} qcap2_rcbuffer_create_info_t;
+
+struct qcap2_rcbuffer_ops_t {
+	size_t cb;
+	QRESULT (*begin_access)(void* owner, void* user_data, uint32_t flags, qcap2_rcbuffer_access_t* access);
+	void    (*end_access)(void* owner, void* user_data, qcap2_rcbuffer_access_t* access);
+	QRESULT (*query)(void* owner, void* user_data, qcap2_rcbuffer_info_t* info);
+	QRESULT (*get_video_info)(void* owner, void* user_data, qcap2_rcbuffer_video_info_t* info);
+	QRESULT (*set_video_info)(void* owner, void* user_data, const qcap2_rcbuffer_video_info_t* info);
+	QRESULT (*get_plane)(void* owner, void* user_data, int plane, qcap2_rcbuffer_plane_t* out);
+	QRESULT (*get_packet_info)(void* owner, void* user_data, qcap2_rcbuffer_packet_info_t* info);
+	QRESULT (*set_packet_info)(void* owner, void* user_data, const qcap2_rcbuffer_packet_info_t* info);
+	QRESULT (*get_handle)(void* owner, void* user_data, qcap2_rcbuffer_handle_type_t type, qcap2_rcbuffer_handle_t* out);
+};
+
+qcap2_rcbuffer_t* qcap2_rcbuffer_new(const qcap2_rcbuffer_create_info_t* info);
+```
+
+若仍需要方便建立 system memory frame / packet，可提供 factory：
+
+```c
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_system_video_frame(const qcap2_video_frame_create_info_t* info);
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_system_packet(size_t capacity);
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_dmabuf_video_frame(const qcap2_dmabuf_frame_create_info_t* info);
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_cuda_video_frame(const qcap2_cuda_frame_create_info_t* info);
+```
 
 ---
 
-## 5. Migration Path & Roadmap
+## 7. Pipeline 使用方式應一致
 
-To ensure continuous build verification and prevent regression, the migration must be phased:
+### 7.1 CPU producer fill input
 
-### Phase 1: Core Framework (Private)
-1. Add the internal base class `qcap2_rcbuffer_t` inside `src/qcap2.buffer_priv.h`.
-2. Define `qcap2_system_buffer` subclass to emulate the legacy `qcap2_rcbuffer_new` behavior.
-3. Rewrite [qcap2.buffer.cpp](file:///home/zzlee/qcap2-dev/src/qcap2.buffer.cpp) to forward the existing C API functions to the new virtual backend. This ensures all tests compile and pass before porting internal components.
+```c
+qcap2_rcbuffer_access_t access = { sizeof(access) };
+QRESULT r = qcap2_rcbuffer_begin_access(
+	buf,
+	QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU,
+	&access);
 
-### Phase 2: Extend public APIs
-1. Update [qcap2.buffer.h](file:///home/zzlee/qcap2-dev/include/qcap2.buffer.h) to add `qcap2_rcbuffer_get_type`, `qcap2_rcbuffer_get_native_handle` and metadata getters (`qcap2_rcbuffer_get_pts`, etc.).
-2. Implement subclasses `qcap2_avpacket_buffer` and `qcap2_avframe_buffer`.
+if (r == QCAP_RS_SUCCESSFUL) {
+	qcap2_rcbuffer_plane_t p0 = { sizeof(p0) };
+	qcap2_rcbuffer_get_plane(buf, 0, &p0);
+	// fill p0.data
+	qcap2_rcbuffer_end_access(buf, &access);
+}
 
-### Phase 3: Port Internal Components
-1. Port demuxer, muxer, and processing components to use the new C metadata getters instead of direct structure access.
-2. Replace legacy frame/packet allocation calls with the creation of the respective subclasses.
+qcap2_video_encoder_push(enc, buf);
+qcap2_rcbuffer_release(buf);
+```
 
-### Phase 4: Cleanup & Rework Pools
-1. Remove `qcap2_av_frame_t` and `qcap2_av_packet_t` from public headers.
-2. Refactor buffer pools to use factory functions creating subclasses.
-3. Update unit tests to verify the extended features (types and hardware handles).
+### 7.2 Device producer / zero-copy path
+
+```c
+qcap2_rcbuffer_access_t access = { sizeof(access) };
+QRESULT r = qcap2_rcbuffer_begin_access(
+	buf,
+	QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_DEVICE | QCAP2_RCBUFFER_ACCESS_ZERO_COPY,
+	&access);
+
+if (r == QCAP_RS_SUCCESSFUL) {
+	qcap2_rcbuffer_handle_t h = { sizeof(h) };
+	qcap2_rcbuffer_get_handle(buf, QCAP2_RCBUFFER_HANDLE_CUDA_DEVICE_PTR, &h);
+	// launch CUDA kernel with h.u.value
+	qcap2_rcbuffer_end_access(buf, &access);
+}
+```
+
+### 7.3 Component processing
+
+Component 不應 cast payload，而是：
+
+1. `qcap2_rcbuffer_query()` 檢查 content/memory/capability。
+2. `qcap2_rcbuffer_begin_access()` 要求 CPU 或 DEVICE access。
+3. 使用 `get_video_info()` / `get_plane()` / `get_packet_info()` / `get_handle()`。
+4. `qcap2_rcbuffer_end_access()`。
+5. 既有 HPR/PPR recycle 流程不變。
+
+---
+
+## 8. Implementation roadmap
+
+### Phase 1 — 破壞式重整 public API
+
+1. 移除或不再宣告：
+   - `qcap2_rcbuffer_get_data()`
+   - `qcap2_rcbuffer_lock_data()`
+   - `qcap2_rcbuffer_unlock_data()`
+   - `qcap2_rcbuffer_new(PVOID, callback)` 舊簽名
+2. 新增：
+   - `qcap2_rcbuffer_new(const qcap2_rcbuffer_create_info_t*)`
+   - `qcap2_rcbuffer_begin_access()` / `qcap2_rcbuffer_end_access()`
+   - query/view/handle API
+3. `qcap2_container_of()` 不再出現在 rcbuf lifecycle 文件或 rcbuf tests 中。
+
+### Phase 2 — 內部 backend adapter
+
+1. system-memory video frame backend。
+2. system-memory packet backend。
+3. dmabuf video frame backend。
+4. CUDA / NvBufSurface backend skeleton。
+
+### Phase 3 — Port media components
+
+1. scaler / encoder / decoder / muxer 全部移除 direct cast。
+2. CPU software components 要求 `CPU_READ` / `CPU_WRITE`。
+3. hardware components 優先要求 `DEVICE` / `ZERO_COPY`，必要時 fallback 到 CPU staging。
+
+### Phase 4 — Pool / recycle 重整
+
+1. frame pool / packet pool 改成產生特定 backend rcbuf。
+2. HPR/PPR queue 仍只傳 `qcap2_rcbuffer_t*`。
+3. `release()` 不再需要知道 payload type；只觸發 backend destroy/recycle。
+
+---
+
+## 9. Acceptance criteria
+
+- public media code 沒有 `(qcap2_av_frame_t*)qcap2_rcbuffer_get_data(...)` 這類 cast。
+- public media code 沒有 `qcap2_container_of()` 來回推 rcbuf owner。
+- 所有 buffer type 都透過同一套 push/pop/recycle 傳遞 `qcap2_rcbuffer_t*`。
+- CPU access、device access、zero-copy handle 由 capability negotiation 決定。
+- dmabuf / CUDA / NvBufSurface backend 不需要偽裝成 system-memory `qcap2_av_frame_t`。
+- resource 不會在 active access scope 結束前被 destroy 或 requeue。
