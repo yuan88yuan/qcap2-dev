@@ -50,7 +50,7 @@ static uint32_t qcap_colorspace_to_v4l2(ULONG colorspace) {
     }
 }
 
-static void qcap2_v4l2_buffer_on_free(PVOID pData);
+static void qcap2_v4l2_buffer_on_free(void* owner, void* user_data);
 
 struct qcap2_tpg_buffer_slot_t {
     uint8_t* raw_buffer;
@@ -92,23 +92,27 @@ private:
             }
 
             if (rcbuf) {
-                // Generate a simulated frame (e.g. solid color with frame index)
-                PVOID pData = qcap2_rcbuffer_get_data(rcbuf);
-                if (pData) {
-                    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-                    uint8_t* pPixels = nullptr;
-                    int stride = 0;
-                    qcap2_av_frame_get_buffer(pFrame, &pPixels, &stride);
+                qcap2_rcbuffer_access_t access;
+                memset(&access, 0, sizeof(access));
+                access.cb = sizeof(access);
+                if (qcap2_rcbuffer_begin_access(rcbuf, QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU, &access) == QCAP_RS_SUCCESSFUL) {
+                    qcap2_rcbuffer_video_info_t vinfo;
+                    memset(&vinfo, 0, sizeof(vinfo));
+                    vinfo.cb = sizeof(vinfo);
+                    if (qcap2_rcbuffer_get_video_info(rcbuf, &vinfo) == QCAP_RS_SUCCESSFUL) {
+                        qcap2_rcbuffer_plane_t plane0;
+                        memset(&plane0, 0, sizeof(plane0));
+                        plane0.cb = sizeof(plane0);
+                        if (qcap2_rcbuffer_get_plane(rcbuf, 0, &plane0) == QCAP_RS_SUCCESSFUL && plane0.data) {
+                            uint8_t color_val = (uint8_t)((self->frame_index * 4) & 0xFF);
+                            memset(plane0.data, color_val, self->p->height * plane0.stride);
+                        }
 
-                    if (pPixels && stride > 0) {
-                        uint8_t color_val = (uint8_t)((self->frame_index * 4) & 0xFF);
-                        memset(pPixels, color_val, self->p->height * stride);
+                        vinfo.pts = self->frame_index * (1000000ULL / (uint64_t)fps);
+                        vinfo.sample_time = (double)vinfo.pts / 1000000.0;
+                        qcap2_rcbuffer_set_video_info(rcbuf, &vinfo);
                     }
-
-                    // Set PTS and sample time
-                    uint64_t pts = self->frame_index * (1000000ULL / (uint64_t)fps);
-                    qcap2_av_frame_set_pts(pFrame, pts);
-                    qcap2_av_frame_set_sample_time(pFrame, (double)pts / 1000000.0);
+                    qcap2_rcbuffer_end_access(rcbuf, &access);
                 }
 
                 self->frame_index++;
@@ -184,7 +188,7 @@ public:
             qcap2_av_frame_set_video_property(&slot->frame, color_space, width, height);
             qcap2_av_frame_set_buffer(&slot->frame, slot->raw_buffer, stride);
 
-            slot->rcbuf = qcap2_rcbuffer_new(&slot->frame, [](PVOID){});
+            slot->rcbuf = qcap2_rcbuffer_new_from_av_frame(&slot->frame, slot, [](void*, void*){});
             idle_buffers.push_back(slot->rcbuf);
         }
 
@@ -227,11 +231,12 @@ public:
     QRESULT push(qcap2_rcbuffer_t* pRCBuffer) override {
         if (!pRCBuffer) return QCAP_RS_ERROR_INVALID_PARAMETER;
 
-        PVOID pData = qcap2_rcbuffer_get_data(pRCBuffer);
-        if (!pData) return QCAP_RS_ERROR_GENERAL;
+        qcap2_rcbuffer_info_t info;
+        memset(&info, 0, sizeof(info));
+        info.cb = sizeof(info);
+        if (qcap2_rcbuffer_query(pRCBuffer, &info) != QCAP_RS_SUCCESSFUL) return QCAP_RS_ERROR_GENERAL;
 
-        qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-        qcap2_tpg_buffer_slot_t* slot = qcap2_container_of(pFrame, qcap2_tpg_buffer_slot_t, frame);
+        qcap2_tpg_buffer_slot_t* slot = (qcap2_tpg_buffer_slot_t*)info.owner;
 
         // Verify if it belongs to our slot list
         bool found = false;
@@ -528,7 +533,7 @@ public:
                 }
             }
 
-            slot->rcbuf = qcap2_rcbuffer_new(&slot->frame, qcap2_v4l2_buffer_on_free);
+            slot->rcbuf = qcap2_rcbuffer_new_from_av_frame(&slot->frame, slot, qcap2_v4l2_buffer_on_free);
         }
 
         for (int i = 0; i < slot_count; ++i) {
@@ -603,15 +608,16 @@ public:
         }
 
         // Recreate the rcbuf since the previous one was deleted
-        slot->rcbuf = qcap2_rcbuffer_new(&slot->frame, qcap2_v4l2_buffer_on_free);
+        slot->rcbuf = qcap2_rcbuffer_new_from_av_frame(&slot->frame, slot, qcap2_v4l2_buffer_on_free);
     }
 
     QRESULT push(qcap2_rcbuffer_t* pRCBuffer) override {
-        PVOID pData = qcap2_rcbuffer_get_data(pRCBuffer);
-        if (!pData) return QCAP_RS_ERROR_GENERAL;
+        qcap2_rcbuffer_info_t info;
+        memset(&info, 0, sizeof(info));
+        info.cb = sizeof(info);
+        if (qcap2_rcbuffer_query(pRCBuffer, &info) != QCAP_RS_SUCCESSFUL) return QCAP_RS_ERROR_GENERAL;
 
-        qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-        qcap2_v4l2_buffer_slot_t* slot = qcap2_container_of(pFrame, qcap2_v4l2_buffer_slot_t, frame);
+        qcap2_v4l2_buffer_slot_t* slot = (qcap2_v4l2_buffer_slot_t*)info.owner;
 
         if (slot->pSource != this) {
             return QCAP_RS_ERROR_GENERAL;
@@ -641,10 +647,10 @@ public:
     }
 };
 
-static void qcap2_v4l2_buffer_on_free(PVOID pData) {
-    if (!pData) return;
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-    qcap2_v4l2_buffer_slot_t* slot = qcap2_container_of(pFrame, qcap2_v4l2_buffer_slot_t, frame);
+static void qcap2_v4l2_buffer_on_free(void* owner, void* user_data) {
+    (void)owner;
+    if (!user_data) return;
+    qcap2_v4l2_buffer_slot_t* slot = (qcap2_v4l2_buffer_slot_t*)user_data;
     slot->pSource->requeue_slot(slot);
 }
 
@@ -866,11 +872,16 @@ private:
                 qcap2_av_frame_set_audio_property(&payload->frame, channels, sample_fmt, sample_frequency, bytes_read);
                 qcap2_av_frame_set_buffer(&payload->frame, payload->raw_buffer, bytes_read);
 
-                qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new(&payload->frame, [](PVOID pData) {
-                    qcap2_audio_payload_t* pl = qcap2_container_of((qcap2_av_frame_t*)pData, qcap2_audio_payload_t, frame);
-                    delete[] pl->raw_buffer;
-                    delete pl;
-                });
+                qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_from_av_frame(
+                    &payload->frame,
+                    payload,
+                    [](void* owner, void* user_data) {
+                        (void)owner;
+                        qcap2_audio_payload_t* pl = (qcap2_audio_payload_t*)user_data;
+                        delete[] pl->raw_buffer;
+                        delete pl;
+                    }
+                );
 
                 if (rcbuf) {
                     qcap2_rcbuffer_queue_push(self->p->queue, rcbuf);
@@ -989,11 +1000,16 @@ private:
             qcap2_av_frame_set_pts(&payload->frame, pts);
             qcap2_av_frame_set_sample_time(&payload->frame, (double)pts / 1000000.0);
 
-            qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new(&payload->frame, [](PVOID pData) {
-                qcap2_audio_payload_t* pl = qcap2_container_of((qcap2_av_frame_t*)pData, qcap2_audio_payload_t, frame);
-                delete[] pl->raw_buffer;
-                delete pl;
-            });
+            qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_from_av_frame(
+                &payload->frame,
+                payload,
+                [](void* owner, void* user_data) {
+                    (void)owner;
+                    qcap2_audio_payload_t* pl = (qcap2_audio_payload_t*)user_data;
+                    delete[] pl->raw_buffer;
+                    delete pl;
+                }
+            );
 
             if (rcbuf) {
                 qcap2_rcbuffer_queue_push(self->p->queue, rcbuf);
@@ -1186,17 +1202,27 @@ private:
             qcap2_rcbuffer_t* rcbuf = nullptr;
             QRESULT qres = qcap2_rcbuffer_queue_pop(self->p->queue, &rcbuf);
             if (qres == QCAP_RS_SUCCESSFUL && rcbuf) {
-                PVOID pData = qcap2_rcbuffer_lock_data(rcbuf);
-                if (pData) {
-                    qcap2_av_frame_t* frame = (qcap2_av_frame_t*)pData;
-                    uint8_t* pBuf = nullptr;
-                    int nSize = 0;
-                    qcap2_av_frame_get_buffer(frame, &pBuf, &nSize);
-                    if (pBuf && nSize > 0) {
-                        ssize_t bytes_written = write(self->fd, pBuf, nSize);
-                        (void)bytes_written;
+                qcap2_rcbuffer_access_t access;
+                memset(&access, 0, sizeof(access));
+                access.cb = sizeof(access);
+                if (qcap2_rcbuffer_begin_access(rcbuf, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) == QCAP_RS_SUCCESSFUL) {
+                    qcap2_rcbuffer_plane_t plane;
+                    memset(&plane, 0, sizeof(plane));
+                    plane.cb = sizeof(plane);
+                    if (qcap2_rcbuffer_get_plane(rcbuf, 0, &plane) == QCAP_RS_SUCCESSFUL && plane.data) {
+                        qcap2_rcbuffer_audio_info_t ainfo;
+                        memset(&ainfo, 0, sizeof(ainfo));
+                        ainfo.cb = sizeof(ainfo);
+                        int size = plane.stride;
+                        if (qcap2_rcbuffer_get_audio_info(rcbuf, &ainfo) == QCAP_RS_SUCCESSFUL && ainfo.frame_size > 0) {
+                            size = ainfo.frame_size;
+                        }
+                        if (size > 0) {
+                            ssize_t bytes_written = write(self->fd, plane.data, size);
+                            (void)bytes_written;
+                        }
                     }
-                    qcap2_rcbuffer_unlock_data(rcbuf);
+                    qcap2_rcbuffer_end_access(rcbuf, &access);
                 }
                 qcap2_rcbuffer_queue_push(self->p->recycled_queue, rcbuf);
                 qcap2_rcbuffer_release(rcbuf);
@@ -1536,20 +1562,35 @@ private:
                 continue;
             }
 
-            PVOID pFrameData = qcap2_rcbuffer_lock_data(rcbuf);
-            if (!pFrameData) {
+            qcap2_rcbuffer_access_t access;
+            memset(&access, 0, sizeof(access));
+            access.cb = sizeof(access);
+            if (qcap2_rcbuffer_begin_access(rcbuf, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
                 qcap2_rcbuffer_release(rcbuf);
                 continue;
             }
 
-            qcap2_av_frame_t* pFrame = reinterpret_cast<qcap2_av_frame_t*>(pFrameData);
-            
+            qcap2_rcbuffer_video_info_t video_info;
+            memset(&video_info, 0, sizeof(video_info));
+            video_info.cb = sizeof(video_info);
+            if (qcap2_rcbuffer_get_video_info(rcbuf, &video_info) != QCAP_RS_SUCCESSFUL) {
+                qcap2_rcbuffer_end_access(rcbuf, &access);
+                qcap2_rcbuffer_release(rcbuf);
+                continue;
+            }
+
+            qcap2_rcbuffer_plane_t plane;
+            memset(&plane, 0, sizeof(plane));
+            plane.cb = sizeof(plane);
             uint8_t* pSrcBuf = nullptr;
             int nSrcStride = 0;
-            qcap2_av_frame_get_buffer(pFrame, &pSrcBuf, &nSrcStride);
-            
-            ULONG nWidth = 0, nHeight = 0, nColorSpace = 0;
-            qcap2_av_frame_get_video_property(pFrame, &nColorSpace, &nWidth, &nHeight);
+            if (qcap2_rcbuffer_get_plane(rcbuf, 0, &plane) == QCAP_RS_SUCCESSFUL) {
+                pSrcBuf = plane.data;
+                nSrcStride = plane.stride;
+            }
+
+            ULONG nWidth = video_info.width;
+            ULONG nHeight = video_info.height;
 
             enum v4l2_memory mem_type = static_cast<enum v4l2_memory>(self->p->v4l2_memory_val);
             struct v4l2_buffer buf;
@@ -1569,13 +1610,13 @@ private:
 
                 int poll_ret = poll(&pfd, 1, 50);
                 if (poll_ret <= 0) {
-                    qcap2_rcbuffer_unlock_data(rcbuf);
+                    qcap2_rcbuffer_end_access(rcbuf, &access);
                     qcap2_rcbuffer_release(rcbuf);
                     continue;
                 }
 
                 if (ioctl(self->fd, VIDIOC_DQBUF, &buf) < 0) {
-                    qcap2_rcbuffer_unlock_data(rcbuf);
+                    qcap2_rcbuffer_end_access(rcbuf, &access);
                     qcap2_rcbuffer_release(rcbuf);
                     continue;
                 }
@@ -1598,12 +1639,14 @@ private:
                     buf.m.userptr = (unsigned long)slot->pUserPtr;
                     buf.length = slot->nLength;
                 } else if (mem_type == V4L2_MEMORY_DMABUF) {
-                    qcap2_dmabuf_t* pDMABuf = nullptr;
-                    if (qcap2_av_frame_get_dmabuf(pFrame, &pDMABuf) == QCAP_RS_SUCCESSFUL && pDMABuf) {
-                        buf.m.fd = pDMABuf->fd;
-                        buf.length = pDMABuf->dmabuf_size;
+                    qcap2_rcbuffer_handle_t handle;
+                    memset(&handle, 0, sizeof(handle));
+                    handle.cb = sizeof(handle);
+                    if (qcap2_rcbuffer_get_handle(rcbuf, QCAP2_RCBUFFER_HANDLE_DMABUF_FD, &handle) == QCAP_RS_SUCCESSFUL) {
+                        buf.m.fd = handle.u.fd;
+                        buf.length = handle.size;
                     } else {
-                        qcap2_rcbuffer_unlock_data(rcbuf);
+                        qcap2_rcbuffer_end_access(rcbuf, &access);
                         qcap2_rcbuffer_release(rcbuf);
                         continue;
                     }
@@ -1611,8 +1654,7 @@ private:
 
                 buf.index = target_slot_index;
                 
-                double dSampleTime = 0.0;
-                qcap2_av_frame_get_sample_time(pFrame, &dSampleTime);
+                double dSampleTime = video_info.sample_time;
                 buf.timestamp.tv_sec = (time_t)dSampleTime;
                 buf.timestamp.tv_usec = (suseconds_t)((dSampleTime - buf.timestamp.tv_sec) * 1000000.0);
 
@@ -1623,7 +1665,7 @@ private:
                 }
             }
 
-            qcap2_rcbuffer_unlock_data(rcbuf);
+            qcap2_rcbuffer_end_access(rcbuf, &access);
             qcap2_rcbuffer_queue_push(self->p->recycled_queue, rcbuf);
             qcap2_rcbuffer_release(rcbuf);
 
@@ -1838,21 +1880,32 @@ private:
                 continue;
             }
 
-            PVOID pFrameData = qcap2_rcbuffer_lock_data(rcbuf);
-            if (!pFrameData) {
+            qcap2_rcbuffer_access_t access;
+            memset(&access, 0, sizeof(access));
+            access.cb = sizeof(access);
+            if (qcap2_rcbuffer_begin_access(rcbuf, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
                 qcap2_rcbuffer_release(rcbuf);
                 continue;
             }
 
-            qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pFrameData;
+            qcap2_rcbuffer_video_info_t video_info;
+            memset(&video_info, 0, sizeof(video_info));
+            video_info.cb = sizeof(video_info);
+            if (qcap2_rcbuffer_get_video_info(rcbuf, &video_info) != QCAP_RS_SUCCESSFUL) {
+                qcap2_rcbuffer_end_access(rcbuf, &access);
+                qcap2_rcbuffer_release(rcbuf);
+                continue;
+            }
 
             // DRM zero-copy DMABUF importing scheme
-            qcap2_dmabuf_t* pDMABuf = nullptr;
-            if (qcap2_av_frame_get_dmabuf(pFrame, &pDMABuf) == QCAP_RS_SUCCESSFUL && pDMABuf) {
+            qcap2_rcbuffer_handle_t handle;
+            memset(&handle, 0, sizeof(handle));
+            handle.cb = sizeof(handle);
+            if (qcap2_rcbuffer_get_handle(rcbuf, QCAP2_RCBUFFER_HANDLE_DMABUF_FD, &handle) == QCAP_RS_SUCCESSFUL) {
                 uint32_t gem_handle = 0;
-                if (qcap2_drm_prime_fd_to_handle(self->fd, pDMABuf->fd, &gem_handle) == 0) {
-                    ULONG width = 0, height = 0, color_space = 0;
-                    qcap2_av_frame_get_video_property(pFrame, &color_space, &width, &height);
+                if (qcap2_drm_prime_fd_to_handle(self->fd, handle.u.fd, &gem_handle) == 0) {
+                    ULONG width = video_info.width;
+                    ULONG height = video_info.height;
 
                     uint32_t handles[4] = { gem_handle, 0, 0, 0 };
                     uint32_t pitches[4] = { (uint32_t)(width * 4), 0, 0, 0 };
@@ -1881,7 +1934,7 @@ private:
                 }
             }
 
-            qcap2_rcbuffer_unlock_data(rcbuf);
+            qcap2_rcbuffer_end_access(rcbuf, &access);
             qcap2_rcbuffer_queue_push(self->p->recycled_queue, rcbuf);
             qcap2_rcbuffer_release(rcbuf);
         }

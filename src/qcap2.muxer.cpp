@@ -113,24 +113,23 @@ static void muxer_write_thread(qcap2_muxer_priv_t* priv) {
                         std::lock_guard<std::mutex> lock(*(vd_priv->mtx));
                         if (!vd_priv->input_queue.empty()) {
                             qcap2_rcbuffer_t* buf = vd_priv->input_queue.front();
-                            PVOID pData = qcap2_rcbuffer_lock_data(buf);
-                            if (pData) {
-                                qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)pData;
-                                int64_t dts = 0;
-                                qcap2_av_packet_get_dts(pkt, &dts);
+                            qcap2_rcbuffer_packet_info_t pkt_info;
+                            memset(&pkt_info, 0, sizeof(pkt_info));
+                            pkt_info.cb = sizeof(pkt_info);
+                            if (qcap2_rcbuffer_get_packet_info(buf, &pkt_info) == QCAP_RS_SUCCESSFUL) {
+                                int64_t dts = pkt_info.dts;
                                 if (dts < min_dts) {
                                     min_dts = dts;
                                     selected_buf = buf;
                                     selected_decoder_index = idx;
                                     is_video = true;
                                 }
-                                qcap2_rcbuffer_unlock_data(buf);
                             }
                         }
                     }
                 }
             }
-
+ 
             // Audio streams
             int a_count = qcap2_program_info_get_audio_decoder_count(prog);
             for (int i = 0; i < a_count; ++i) {
@@ -142,25 +141,24 @@ static void muxer_write_thread(qcap2_muxer_priv_t* priv) {
                         std::lock_guard<std::mutex> lock(*(ad_priv->mtx));
                         if (!ad_priv->input_queue.empty()) {
                             qcap2_rcbuffer_t* buf = ad_priv->input_queue.front();
-                            PVOID pData = qcap2_rcbuffer_lock_data(buf);
-                            if (pData) {
-                                qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)pData;
-                                int64_t dts = 0;
-                                qcap2_av_packet_get_dts(pkt, &dts);
+                            qcap2_rcbuffer_packet_info_t pkt_info;
+                            memset(&pkt_info, 0, sizeof(pkt_info));
+                            pkt_info.cb = sizeof(pkt_info);
+                            if (qcap2_rcbuffer_get_packet_info(buf, &pkt_info) == QCAP_RS_SUCCESSFUL) {
+                                int64_t dts = pkt_info.dts;
                                 if (dts < min_dts) {
                                     min_dts = dts;
                                     selected_buf = buf;
                                     selected_decoder_index = idx;
                                     is_video = false;
                                 }
-                                qcap2_rcbuffer_unlock_data(buf);
                             }
                         }
                     }
                 }
             }
         }
-
+ 
         if (selected_buf) {
             // Pop the packet from the selected queue
             if (is_video) {
@@ -174,86 +172,85 @@ static void muxer_write_thread(qcap2_muxer_priv_t* priv) {
                 std::lock_guard<std::mutex> lock(*(ad_priv->mtx));
                 ad_priv->input_queue.pop();
             }
-
+ 
             // Write the packet
-            PVOID pData = qcap2_rcbuffer_lock_data(selected_buf);
-            if (pData) {
-                qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)pData;
-                uint8_t* pBuf = nullptr;
-                int nSize = 0;
-                qcap2_av_packet_get_buffer(pkt, &pBuf, &nSize);
-
-                double sample_time = 0.0;
-                qcap2_av_packet_get_sample_time(pkt, &sample_time);
-
-                int64_t input_pts = 0, input_dts = 0;
-                qcap2_av_packet_get_pts(pkt, &input_pts);
-                qcap2_av_packet_get_dts(pkt, &input_dts);
-
-                AVFormatContext* target_ctx = nullptr;
-                int target_stream_idx = -1;
-
-                if (priv->type == QCAP2_MUXER_TYPE_SDP) {
-                    if (is_video) {
-                        qcap2_video_decoder_t* vd = priv->video_decoders[selected_decoder_index];
-                        auto it = priv->video_rtp_map.find(vd);
-                        if (it != priv->video_rtp_map.end()) {
-                            target_ctx = it->second;
-                            target_stream_idx = 0;
+            qcap2_rcbuffer_access_t access;
+            memset(&access, 0, sizeof(access));
+            access.cb = sizeof(access);
+            if (qcap2_rcbuffer_begin_access(selected_buf, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) == QCAP_RS_SUCCESSFUL) {
+                qcap2_rcbuffer_packet_info_t pkt_info;
+                memset(&pkt_info, 0, sizeof(pkt_info));
+                pkt_info.cb = sizeof(pkt_info);
+                if (qcap2_rcbuffer_get_packet_info(selected_buf, &pkt_info) == QCAP_RS_SUCCESSFUL) {
+                    uint8_t* pBuf = pkt_info.data;
+                    int nSize = pkt_info.size;
+                    double sample_time = pkt_info.sample_time;
+                    int64_t input_pts = pkt_info.pts;
+                    int64_t input_dts = pkt_info.dts;
+                    BOOL is_key = pkt_info.is_keyframe;
+ 
+                    AVFormatContext* target_ctx = nullptr;
+                    int target_stream_idx = -1;
+ 
+                    if (priv->type == QCAP2_MUXER_TYPE_SDP) {
+                        if (is_video) {
+                            qcap2_video_decoder_t* vd = priv->video_decoders[selected_decoder_index];
+                            auto it = priv->video_rtp_map.find(vd);
+                            if (it != priv->video_rtp_map.end()) {
+                                target_ctx = it->second;
+                                target_stream_idx = 0;
+                            }
+                        } else {
+                            qcap2_audio_decoder_t* ad = priv->audio_decoders[selected_decoder_index];
+                            auto it = priv->audio_rtp_map.find(ad);
+                            if (it != priv->audio_rtp_map.end()) {
+                                target_ctx = it->second;
+                                target_stream_idx = 0;
+                            }
                         }
                     } else {
-                        qcap2_audio_decoder_t* ad = priv->audio_decoders[selected_decoder_index];
-                        auto it = priv->audio_rtp_map.find(ad);
-                        if (it != priv->audio_rtp_map.end()) {
-                            target_ctx = it->second;
-                            target_stream_idx = 0;
+                        target_ctx = priv->format_context;
+                        if (is_video) {
+                            qcap2_video_decoder_t* vd = priv->video_decoders[selected_decoder_index];
+                            auto it = priv->video_stream_map.find(vd);
+                            if (it != priv->video_stream_map.end()) {
+                                target_stream_idx = it->second;
+                            }
+                        } else {
+                            qcap2_audio_decoder_t* ad = priv->audio_decoders[selected_decoder_index];
+                            auto it = priv->audio_stream_map.find(ad);
+                            if (it != priv->audio_stream_map.end()) {
+                                target_stream_idx = it->second;
+                            }
                         }
                     }
-                } else {
-                    target_ctx = priv->format_context;
-                    if (is_video) {
-                        qcap2_video_decoder_t* vd = priv->video_decoders[selected_decoder_index];
-                        auto it = priv->video_stream_map.find(vd);
-                        if (it != priv->video_stream_map.end()) {
-                            target_stream_idx = it->second;
-                        }
-                    } else {
-                        qcap2_audio_decoder_t* ad = priv->audio_decoders[selected_decoder_index];
-                        auto it = priv->audio_stream_map.find(ad);
-                        if (it != priv->audio_stream_map.end()) {
-                            target_stream_idx = it->second;
+ 
+                    if (target_ctx && target_stream_idx >= 0) {
+                        AVStream* stream = target_ctx->streams[target_stream_idx];
+                        AVPacket* av_pkt = av_packet_alloc();
+                        if (av_pkt) {
+                            av_pkt->data = pBuf;
+                            av_pkt->size = nSize;
+                            av_pkt->stream_index = target_stream_idx;
+ 
+                            // Calculate correct timestamp ratios relative to output container stream timebase
+                            int64_t diff = input_pts - input_dts;
+                            double dts_time = sample_time - (double)diff / 1000000.0;
+ 
+                            av_pkt->pts = (int64_t)(sample_time / av_q2d(stream->time_base) + 0.5);
+                            av_pkt->dts = (int64_t)(dts_time / av_q2d(stream->time_base) + 0.5);
+                            av_pkt->duration = (int64_t)(0.04 / av_q2d(stream->time_base) + 0.5);
+ 
+                            if (is_key) {
+                                av_pkt->flags |= AV_PKT_FLAG_KEY;
+                            }
+ 
+                            av_interleaved_write_frame(target_ctx, av_pkt);
+                            av_packet_free(&av_pkt);
                         }
                     }
                 }
-
-                if (target_ctx && target_stream_idx >= 0) {
-                    AVStream* stream = target_ctx->streams[target_stream_idx];
-                    AVPacket* av_pkt = av_packet_alloc();
-                    if (av_pkt) {
-                        av_pkt->data = pBuf;
-                        av_pkt->size = nSize;
-                        av_pkt->stream_index = target_stream_idx;
-
-                        // Calculate correct timestamp ratios relative to output container stream timebase
-                        int64_t diff = input_pts - input_dts;
-                        double dts_time = sample_time - (double)diff / 1000000.0;
-
-                        av_pkt->pts = (int64_t)(sample_time / av_q2d(stream->time_base) + 0.5);
-                        av_pkt->dts = (int64_t)(dts_time / av_q2d(stream->time_base) + 0.5);
-                        av_pkt->duration = (int64_t)(0.04 / av_q2d(stream->time_base) + 0.5);
-
-                        int stream_idx_prop = 0;
-                        BOOL is_key = FALSE;
-                        qcap2_av_packet_get_property(pkt, &stream_idx_prop, &is_key);
-                        if (is_key) {
-                            av_pkt->flags |= AV_PKT_FLAG_KEY;
-                        }
-
-                        av_interleaved_write_frame(target_ctx, av_pkt);
-                        av_packet_free(&av_pkt);
-                    }
-                }
-                qcap2_rcbuffer_unlock_data(selected_buf);
+                qcap2_rcbuffer_end_access(selected_buf, &access);
             }
             qcap2_rcbuffer_release(selected_buf);
         } else {

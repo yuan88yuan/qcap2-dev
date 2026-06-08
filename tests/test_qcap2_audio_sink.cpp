@@ -43,8 +43,8 @@ int main() {
     qcap2_av_frame_set_audio_property(frame, 2, 16, 44100, sizeof(dummy_samples));
     qcap2_av_frame_set_buffer(frame, dummy_samples, sizeof(dummy_samples));
 
-    qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new(frame, [](PVOID pData) {
-        qcap2_av_frame_t* f = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_from_av_frame(frame, frame, [](void* owner, void* user_data) {
+        qcap2_av_frame_t* f = (qcap2_av_frame_t*)owner;
         if (f) {
             delete f;
         }
@@ -59,20 +59,22 @@ int main() {
     ret = qcap2_audio_sink_pop(sink, &popped_rcbuf);
     assert(ret == QCAP_RS_SUCCESSFUL && popped_rcbuf != nullptr);
 
-    PVOID pData = qcap2_rcbuffer_lock_data(popped_rcbuf);
-    assert(pData != nullptr);
-    qcap2_av_frame_t* popped_frame = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_access_t access = { sizeof(access) };
+    QRESULT r = qcap2_rcbuffer_begin_access(popped_rcbuf, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access);
+    assert(r == QCAP_RS_SUCCESSFUL);
 
-    ULONG ch = 0, fmt = 0, freq = 0, sz = 0;
-    qcap2_av_frame_get_audio_property(popped_frame, &ch, &fmt, &freq, &sz);
-    std::cout << "Popped frame: channels=" << ch << ", format=" << fmt 
-              << ", frequency=" << freq << ", size=" << sz << "\n";
-    assert(ch == 2);
-    assert(fmt == 16);
-    assert(freq == 44100);
-    assert(sz == sizeof(dummy_samples));
+    qcap2_rcbuffer_audio_info_t audio_info = { sizeof(audio_info) };
+    r = qcap2_rcbuffer_get_audio_info(popped_rcbuf, &audio_info);
+    assert(r == QCAP_RS_SUCCESSFUL);
 
-    qcap2_rcbuffer_unlock_data(popped_rcbuf);
+    std::cout << "Popped frame: channels=" << audio_info.channels << ", format=" << audio_info.sample_fmt 
+              << ", frequency=" << audio_info.sample_frequency << ", size=" << audio_info.frame_size << "\n";
+    assert(audio_info.channels == 2);
+    assert(audio_info.sample_fmt == 16);
+    assert(audio_info.sample_frequency == 44100);
+    assert(audio_info.frame_size == sizeof(dummy_samples));
+
+    qcap2_rcbuffer_end_access(popped_rcbuf, &access);
     qcap2_rcbuffer_release(popped_rcbuf);
     qcap2_rcbuffer_release(rcbuf);
 

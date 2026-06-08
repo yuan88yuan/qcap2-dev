@@ -45,6 +45,7 @@ struct qcap2_graphics_priv_t {
     int32_t nColor;
 
     qcap2_rcbuffer_t* pRCBuffer;
+    qcap2_rcbuffer_access_t access;
     uint8_t* pMappedBuffer[4];
     int pMappedStride[4];
     ULONG nColorSpaceType;
@@ -57,6 +58,8 @@ struct qcap2_graphics_priv_t {
     qcap2_graphics_priv_t()
         : nBackendType(QCAP2_GRAPHICS_BACKEND_TYPE_DEFAULT), pFontAtlas(nullptr), nColor(0xFFFFFFFF),
           pRCBuffer(nullptr), nColorSpaceType(0), nBufferWidth(0), nBufferHeight(0), bStarted(false), bBegun(false) {
+        memset(&access, 0, sizeof(access));
+        access.cb = sizeof(access);
         memset(pMappedBuffer, 0, sizeof(pMappedBuffer));
         memset(pMappedStride, 0, sizeof(pMappedStride));
     }
@@ -231,22 +234,43 @@ QRESULT qcap2_graphics_begin(qcap2_graphics_t* pThis, qcap2_rcbuffer_t* pRCBuffe
     qcap2_graphics_priv_t* pPriv = (qcap2_graphics_priv_t*)pThis;
     if (!pPriv || !pRCBuffer || pPriv->bBegun) return QCAP_RS_ERROR_GENERAL;
 
-    void* pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
+    memset(&pPriv->access, 0, sizeof(pPriv->access));
+    pPriv->access.cb = sizeof(pPriv->access);
+    QRESULT r = qcap2_rcbuffer_begin_access(pRCBuffer, QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU, &pPriv->access);
+    if (r != QCAP_RS_SUCCESSFUL) return QCAP_RS_ERROR_GENERAL;
 
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-    qcap2_av_frame_get_video_property(pFrame, &pPriv->nColorSpaceType, &pPriv->nBufferWidth, &pPriv->nBufferHeight);
+    qcap2_rcbuffer_video_info_t vinfo;
+    memset(&vinfo, 0, sizeof(vinfo));
+    vinfo.cb = sizeof(vinfo);
+    if (qcap2_rcbuffer_get_video_info(pRCBuffer, &vinfo) != QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_end_access(pRCBuffer, &pPriv->access);
+        return QCAP_RS_ERROR_GENERAL;
+    }
+
+    pPriv->nColorSpaceType = vinfo.color_space_type;
+    pPriv->nBufferWidth = vinfo.width;
+    pPriv->nBufferHeight = vinfo.height;
 
     // Validate supported formats (e.g., ARGB32, RGB24)
     if (pPriv->nColorSpaceType != QCAP_COLORSPACE_TYPE_ARGB32 &&
         pPriv->nColorSpaceType != QCAP_COLORSPACE_TYPE_RGB24 &&
         pPriv->nColorSpaceType != QCAP_COLORSPACE_TYPE_ABGR32 &&
         pPriv->nColorSpaceType != QCAP_COLORSPACE_TYPE_BGR24) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &pPriv->access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
-    qcap2_av_frame_get_buffer1(pFrame, pPriv->pMappedBuffer, pPriv->pMappedStride);
+    memset(pPriv->pMappedBuffer, 0, sizeof(pPriv->pMappedBuffer));
+    memset(pPriv->pMappedStride, 0, sizeof(pPriv->pMappedStride));
+    for (int i = 0; i < vinfo.plane_count; ++i) {
+        qcap2_rcbuffer_plane_t plane;
+        memset(&plane, 0, sizeof(plane));
+        plane.cb = sizeof(plane);
+        if (qcap2_rcbuffer_get_plane(pRCBuffer, i, &plane) == QCAP_RS_SUCCESSFUL) {
+            pPriv->pMappedBuffer[i] = plane.data;
+            pPriv->pMappedStride[i] = plane.stride;
+        }
+    }
 
     pPriv->pRCBuffer = pRCBuffer;
     pPriv->bBegun = true;
@@ -258,7 +282,7 @@ QRESULT qcap2_graphics_end(qcap2_graphics_t* pThis) {
     qcap2_graphics_priv_t* pPriv = (qcap2_graphics_priv_t*)pThis;
     if (!pPriv || !pPriv->bBegun) return QCAP_RS_ERROR_GENERAL;
 
-    qcap2_rcbuffer_unlock_data(pPriv->pRCBuffer);
+    qcap2_rcbuffer_end_access(pPriv->pRCBuffer, &pPriv->access);
     pPriv->pRCBuffer = nullptr;
     pPriv->bBegun = false;
 

@@ -255,29 +255,47 @@ QRESULT qcap2_audio_resampler_push(qcap2_audio_resampler_t* pThis, qcap2_rcbuffe
     if (!pThis || !pRCBuffer) return QCAP_RS_ERROR_GENERAL;
     qcap2_audio_resampler_priv_t* p = (qcap2_audio_resampler_priv_t*)pThis;
 
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
+    qcap2_rcbuffer_access_t access;
+    memset(&access, 0, sizeof(access));
+    access.cb = sizeof(access);
+    if (qcap2_rcbuffer_begin_access(pRCBuffer, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
+        return QCAP_RS_ERROR_GENERAL;
+    }
 
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-    ULONG in_ch = 0, in_fmt = 0, in_rate = 0, in_size = 0;
-    qcap2_av_frame_get_audio_property(pFrame, &in_ch, &in_fmt, &in_rate, &in_size);
+    qcap2_rcbuffer_audio_info_t audio_info;
+    memset(&audio_info, 0, sizeof(audio_info));
+    audio_info.cb = sizeof(audio_info);
+    if (qcap2_rcbuffer_get_audio_info(pRCBuffer, &audio_info) != QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
+        return QCAP_RS_ERROR_GENERAL;
+    }
+
+    ULONG in_ch = audio_info.channels;
+    ULONG in_fmt = audio_info.sample_fmt;
+    ULONG in_rate = audio_info.sample_frequency;
+    ULONG in_size = audio_info.frame_size;
 
     uint8_t* pInputBuffer = nullptr;
     int nInputStride = 0;
-    qcap2_av_frame_get_buffer(pFrame, &pInputBuffer, &nInputStride);
+    qcap2_rcbuffer_plane_t plane;
+    memset(&plane, 0, sizeof(plane));
+    plane.cb = sizeof(plane);
+    if (qcap2_rcbuffer_get_plane(pRCBuffer, 0, &plane) == QCAP_RS_SUCCESSFUL) {
+        pInputBuffer = plane.data;
+        nInputStride = plane.stride;
+    }
 
-    int64_t nPTS = 0;
-    qcap2_av_frame_get_pts(pFrame, &nPTS);
+    int64_t nPTS = audio_info.pts;
 
     std::lock_guard<std::mutex> lock(*(p->mtx));
     if (!p->running) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
     if (!p->swr_ctx || p->in_channels != in_ch || p->in_sample_fmt != in_fmt || p->in_sample_freq != in_rate) {
         if (!init_resampler(p, in_ch, in_fmt, in_rate)) {
-            qcap2_rcbuffer_unlock_data(pRCBuffer);
+            qcap2_rcbuffer_end_access(pRCBuffer, &access);
             return QCAP_RS_ERROR_GENERAL;
         }
     }
@@ -295,21 +313,25 @@ QRESULT qcap2_audio_resampler_push(qcap2_audio_resampler_t* pThis, qcap2_rcbuffe
     }
 
     if (out_rc) {
-        PVOID pOutData = qcap2_rcbuffer_lock_data(out_rc);
-        out_frame = qcap2_container_of((qcap2_av_frame_t*)pOutData, ResamplerOutputFrame, frame);
-        if (out_frame->buffer_size < out_buf_size) {
+        qcap2_rcbuffer_info_t r_info;
+        memset(&r_info, 0, sizeof(r_info));
+        r_info.cb = sizeof(r_info);
+        if (qcap2_rcbuffer_query(out_rc, &r_info) == QCAP_RS_SUCCESSFUL) {
+            out_frame = (ResamplerOutputFrame*)r_info.owner;
+        }
+        if (out_frame && out_frame->buffer_size < out_buf_size) {
             delete[] out_frame->audio_buffer;
             out_frame->audio_buffer = new uint8_t[out_buf_size];
             out_frame->buffer_size = out_buf_size;
         }
-        qcap2_rcbuffer_unlock_data(out_rc);
     } else {
         out_frame = new ResamplerOutputFrame;
         out_frame->audio_buffer = new uint8_t[out_buf_size];
         out_frame->buffer_size = out_buf_size;
         qcap2_av_frame_init(&out_frame->frame);
-        out_frame->rc_buffer = qcap2_rcbuffer_new(&out_frame->frame, [](PVOID pData) {
-            ResamplerOutputFrame* p = qcap2_container_of(pData, ResamplerOutputFrame, frame);
+        out_frame->rc_buffer = qcap2_rcbuffer_new_from_av_frame(&out_frame->frame, out_frame, [](void* owner, void* user_data) {
+            (void)owner;
+            ResamplerOutputFrame* p = (ResamplerOutputFrame*)user_data;
             delete[] p->audio_buffer;
             delete p;
         });
@@ -321,15 +343,17 @@ QRESULT qcap2_audio_resampler_push(qcap2_audio_resampler_t* pThis, qcap2_rcbuffe
     const uint8_t* in_data[8] = { pInputBuffer, nullptr };
     uint8_t* out_data[8] = { pOutputBuffer, nullptr };
 
-    uint8_t* in_ptrs[4] = { nullptr };
-    int in_strides[4] = { 0 };
-    qcap2_av_frame_get_buffer1(pFrame, in_ptrs, in_strides);
-    if (in_ptrs[0]) {
-        for (int i = 0; i < 4; ++i) in_data[i] = in_ptrs[i];
+    for (int i = 0; i < 4; ++i) {
+        qcap2_rcbuffer_plane_t p_plane;
+        memset(&p_plane, 0, sizeof(p_plane));
+        p_plane.cb = sizeof(p_plane);
+        if (qcap2_rcbuffer_get_plane(pRCBuffer, i, &p_plane) == QCAP_RS_SUCCESSFUL) {
+            in_data[i] = p_plane.data;
+        }
     }
 
     int converted = swr_convert(p->swr_ctx, out_data, out_samples, in_data, in_size);
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
+    qcap2_rcbuffer_end_access(pRCBuffer, &access);
 
     if (converted < 0) {
         qcap2_rcbuffer_release(out_rc);
@@ -601,34 +625,39 @@ QRESULT qcap2_audio_encoder_push(qcap2_audio_encoder_t* pThis, qcap2_rcbuffer_t*
     if (!pThis || !pRCBuffer) return QCAP_RS_ERROR_GENERAL;
     qcap2_audio_encoder_priv_t* p = (qcap2_audio_encoder_priv_t*)pThis;
 
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
+    qcap2_rcbuffer_access_t access;
+    memset(&access, 0, sizeof(access));
+    access.cb = sizeof(access);
+    if (qcap2_rcbuffer_begin_access(pRCBuffer, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
+        return QCAP_RS_ERROR_GENERAL;
+    }
 
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_audio_info_t audio_info;
+    memset(&audio_info, 0, sizeof(audio_info));
+    audio_info.cb = sizeof(audio_info);
+    if (qcap2_rcbuffer_get_audio_info(pRCBuffer, &audio_info) != QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
+        return QCAP_RS_ERROR_GENERAL;
+    }
+
+    ULONG in_ch = audio_info.channels;
+    ULONG in_fmt = audio_info.sample_fmt;
+    ULONG in_rate = audio_info.sample_frequency;
+    ULONG in_size = audio_info.frame_size;
+    int64_t nPTS = audio_info.pts;
+    double dSampleTime = audio_info.sample_time;
 
     std::lock_guard<std::mutex> lock(*(p->mtx));
     if (!p->running || !p->avctx) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
     AVFrame* av_frame = av_frame_alloc();
     if (!av_frame) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_OUT_OF_MEMORY;
     }
-
-    ULONG in_ch = 0, in_fmt = 0, in_rate = 0, in_size = 0;
-    qcap2_av_frame_get_audio_property(pFrame, &in_ch, &in_fmt, &in_rate, &in_size);
-
-    uint8_t* pInputBuffer = nullptr;
-    int nInputStride = 0;
-    qcap2_av_frame_get_buffer(pFrame, &pInputBuffer, &nInputStride);
-
-    int64_t nPTS = 0;
-    qcap2_av_frame_get_pts(pFrame, &nPTS);
-    double dSampleTime = 0;
-    qcap2_av_frame_get_sample_time(pFrame, &dSampleTime);
 
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
     av_channel_layout_default(&av_frame->ch_layout, in_ch);
@@ -643,21 +672,24 @@ QRESULT qcap2_audio_encoder_push(qcap2_audio_encoder_t* pThis, qcap2_rcbuffer_t*
 
     uint8_t* in_ptrs[4] = { nullptr };
     int in_strides[4] = { 0 };
-    qcap2_av_frame_get_buffer1(pFrame, in_ptrs, in_strides);
-
-    if (in_ptrs[0]) {
-        for (int i = 0; i < 4; ++i) {
-            av_frame->data[i] = in_ptrs[i];
-            av_frame->linesize[i] = in_strides[i];
+    for (int i = 0; i < 4; ++i) {
+        qcap2_rcbuffer_plane_t plane;
+        memset(&plane, 0, sizeof(plane));
+        plane.cb = sizeof(plane);
+        if (qcap2_rcbuffer_get_plane(pRCBuffer, i, &plane) == QCAP_RS_SUCCESSFUL) {
+            in_ptrs[i] = plane.data;
+            in_strides[i] = plane.stride;
         }
-    } else {
-        av_frame->data[0] = pInputBuffer;
-        av_frame->linesize[0] = nInputStride;
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        av_frame->data[i] = in_ptrs[i];
+        av_frame->linesize[i] = in_strides[i];
     }
 
     int ret = avcodec_send_frame(p->avctx, av_frame);
     av_frame_free(&av_frame);
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
+    qcap2_rcbuffer_end_access(pRCBuffer, &access);
 
     if (ret < 0) {
         return QCAP_RS_ERROR_GENERAL;
@@ -684,8 +716,8 @@ QRESULT qcap2_audio_encoder_push(qcap2_audio_encoder_t* pThis, qcap2_rcbuffer_t*
         } else {
             qcap2_av_packet_t* new_packet = new qcap2_av_packet_t;
             qcap2_av_packet_init(new_packet);
-            out_rc = qcap2_rcbuffer_new(new_packet, [](PVOID pData) {
-                qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)pData;
+            out_rc = qcap2_rcbuffer_new_from_av_packet(new_packet, new_packet, [](void* owner, void* user_data) {
+                qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)owner;
                 if (pkt) {
                     qcap2_av_packet_free_buffer(pkt);
                     delete pkt;
@@ -694,28 +726,31 @@ QRESULT qcap2_audio_encoder_push(qcap2_audio_encoder_t* pThis, qcap2_rcbuffer_t*
         }
 
         if (out_rc) {
-            PVOID out_data = qcap2_rcbuffer_lock_data(out_rc);
-            if (out_data) {
-                qcap2_av_packet_t* out_packet = (qcap2_av_packet_t*)out_data;
-                
-                uint8_t* out_buf = nullptr;
-                int out_size = 0;
-                qcap2_av_packet_get_buffer(out_packet, &out_buf, &out_size);
-                if (!out_buf || out_size < pkt->size) {
-                    qcap2_av_packet_alloc_buffer(out_packet, pkt->size);
-                    qcap2_av_packet_get_buffer(out_packet, &out_buf, &out_size);
-                }
-                
-                if (out_buf && pkt->size <= out_size) {
-                    memcpy(out_buf, pkt->data, pkt->size);
-                }
+            qcap2_rcbuffer_access_t out_access = { sizeof(out_access) };
+            if (qcap2_rcbuffer_begin_access(out_rc, QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU, &out_access) == QCAP_RS_SUCCESSFUL) {
+                qcap2_rcbuffer_info_t info = { sizeof(info) };
+                if (qcap2_rcbuffer_query(out_rc, &info) == QCAP_RS_SUCCESSFUL) {
+                    qcap2_av_packet_t* out_packet = (qcap2_av_packet_t*)info.owner;
+                    if (out_packet) {
+                        uint8_t* out_buf = nullptr;
+                        int out_size = 0;
+                        qcap2_av_packet_get_buffer(out_packet, &out_buf, &out_size);
+                        if (!out_buf || out_size < pkt->size) {
+                            qcap2_av_packet_alloc_buffer(out_packet, pkt->size);
+                            qcap2_av_packet_get_buffer(out_packet, &out_buf, &out_size);
+                        }
 
-                qcap2_av_packet_set_pts(out_packet, pkt->pts);
-                qcap2_av_packet_set_dts(out_packet, pkt->dts);
-                qcap2_av_packet_set_property(out_packet, 0, (pkt->flags & AV_PKT_FLAG_KEY) ? TRUE : FALSE);
-                qcap2_av_packet_set_sample_time(out_packet, dSampleTime);
+                        if (out_buf && pkt->size <= out_size) {
+                            memcpy(out_buf, pkt->data, pkt->size);
+                        }
 
-                qcap2_rcbuffer_unlock_data(out_rc);
+                        qcap2_av_packet_set_pts(out_packet, pkt->pts);
+                        qcap2_av_packet_set_dts(out_packet, pkt->dts);
+                        qcap2_av_packet_set_property(out_packet, 0, (pkt->flags & AV_PKT_FLAG_KEY) ? TRUE : FALSE);
+                        qcap2_av_packet_set_sample_time(out_packet, dSampleTime);
+                    }
+                }
+                qcap2_rcbuffer_end_access(out_rc, &out_access);
                 p->output_queue.push(out_rc);
                 if (rec_rc) {
                     qcap2_rcbuffer_release(rec_rc);
@@ -995,49 +1030,52 @@ QRESULT qcap2_audio_decoder_push(qcap2_audio_decoder_t* pThis, qcap2_rcbuffer_t*
         return QCAP_RS_SUCCESSFUL;
     }
 
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
+    qcap2_rcbuffer_access_t access;
+    memset(&access, 0, sizeof(access));
+    access.cb = sizeof(access);
+    if (qcap2_rcbuffer_begin_access(pRCBuffer, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
+        return QCAP_RS_ERROR_GENERAL;
+    }
 
-    qcap2_av_packet_t* pPacket = (qcap2_av_packet_t*)pData;
+    qcap2_rcbuffer_packet_info_t pkt_info;
+    memset(&pkt_info, 0, sizeof(pkt_info));
+    pkt_info.cb = sizeof(pkt_info);
+    if (qcap2_rcbuffer_get_packet_info(pRCBuffer, &pkt_info) != QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
+        return QCAP_RS_ERROR_GENERAL;
+    }
 
     std::lock_guard<std::mutex> lock(*(p->mtx));
     if (!p->running || !p->avctx) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
     AVPacket* av_pkt = av_packet_alloc();
     if (!av_pkt) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_OUT_OF_MEMORY;
     }
 
-    uint8_t* pInputBuffer = nullptr;
-    int nInputSize = 0;
-    qcap2_av_packet_get_buffer(pPacket, &pInputBuffer, &nInputSize);
-
-    int64_t nPTS = 0, nDTS = 0;
-    qcap2_av_packet_get_pts(pPacket, &nPTS);
-    qcap2_av_packet_get_dts(pPacket, &nDTS);
-
-    double dSampleTime = 0;
-    qcap2_av_packet_get_sample_time(pPacket, &dSampleTime);
+    uint8_t* pInputBuffer = pkt_info.data;
+    int nInputSize = pkt_info.size;
+    int64_t nPTS = pkt_info.pts;
+    int64_t nDTS = pkt_info.dts;
+    double dSampleTime = pkt_info.sample_time;
+    BOOL is_key = pkt_info.is_keyframe;
 
     av_pkt->data = pInputBuffer;
     av_pkt->size = nInputSize;
     av_pkt->pts = nPTS;
     av_pkt->dts = nDTS;
 
-    int stream_idx = 0;
-    BOOL is_key = FALSE;
-    qcap2_av_packet_get_property(pPacket, &stream_idx, &is_key);
     if (is_key) {
         av_pkt->flags |= AV_PKT_FLAG_KEY;
     }
 
     int ret = avcodec_send_packet(p->avctx, av_pkt);
     av_packet_free(&av_pkt);
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
+    qcap2_rcbuffer_end_access(pRCBuffer, &access);
 
     if (ret < 0) {
         return QCAP_RS_ERROR_GENERAL;
@@ -1064,8 +1102,8 @@ QRESULT qcap2_audio_decoder_push(qcap2_audio_decoder_t* pThis, qcap2_rcbuffer_t*
         } else {
             qcap2_av_frame_t* new_frame = new qcap2_av_frame_t;
             qcap2_av_frame_init(new_frame);
-            out_rc = qcap2_rcbuffer_new(new_frame, [](PVOID pData) {
-                qcap2_av_frame_t* f = (qcap2_av_frame_t*)pData;
+            out_rc = qcap2_rcbuffer_new_from_av_frame(new_frame, new_frame, [](void* owner, void* user_data) {
+                qcap2_av_frame_t* f = (qcap2_av_frame_t*)owner;
                 if (f) {
                     uint8_t* buf = nullptr;
                     int stride = 0;
@@ -1079,41 +1117,44 @@ QRESULT qcap2_audio_decoder_push(qcap2_audio_decoder_t* pThis, qcap2_rcbuffer_t*
         }
 
         if (out_rc) {
-            PVOID out_data = qcap2_rcbuffer_lock_data(out_rc);
-            if (out_data) {
-                qcap2_av_frame_t* out_frame = (qcap2_av_frame_t*)out_data;
-
+            qcap2_rcbuffer_access_t out_access = { sizeof(out_access) };
+            if (qcap2_rcbuffer_begin_access(out_rc, QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU, &out_access) == QCAP_RS_SUCCESSFUL) {
+                qcap2_rcbuffer_info_t info = { sizeof(info) };
+                if (qcap2_rcbuffer_query(out_rc, &info) == QCAP_RS_SUCCESSFUL) {
+                    qcap2_av_frame_t* out_frame = (qcap2_av_frame_t*)info.owner;
+                    if (out_frame) {
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
-                int ch = frame->ch_layout.nb_channels;
+                        int ch = frame->ch_layout.nb_channels;
 #else
-                int ch = frame->channels;
+                        int ch = frame->channels;
 #endif
-                int in_rate = frame->sample_rate;
-                int format = frame->format;
+                        int in_rate = frame->sample_rate;
+                        int format = frame->format;
 
-                qcap2_av_frame_set_audio_property(out_frame, ch, format, in_rate, frame->nb_samples);
+                        qcap2_av_frame_set_audio_property(out_frame, ch, format, in_rate, frame->nb_samples);
 
-                int size = av_samples_get_buffer_size(nullptr, ch, frame->nb_samples, (enum AVSampleFormat)format, 1);
+                        int size = av_samples_get_buffer_size(nullptr, ch, frame->nb_samples, (enum AVSampleFormat)format, 1);
 
-                uint8_t* out_buf = nullptr;
-                int out_stride = 0;
-                qcap2_av_frame_get_buffer(out_frame, &out_buf, &out_stride);
-                if (!out_buf || out_stride < size) {
-                    if (out_buf) free(out_buf);
-                    out_buf = (uint8_t*)malloc(size);
-                    qcap2_av_frame_set_buffer(out_frame, out_buf, size);
+                        uint8_t* out_buf = nullptr;
+                        int out_stride = 0;
+                        qcap2_av_frame_get_buffer(out_frame, &out_buf, &out_stride);
+                        if (!out_buf || out_stride < size) {
+                            if (out_buf) free(out_buf);
+                            out_buf = (uint8_t*)malloc(size);
+                            qcap2_av_frame_set_buffer(out_frame, out_buf, size);
+                        }
+
+                        if (out_buf) {
+                            uint8_t* out_ptrs[AV_NUM_DATA_POINTERS] = { nullptr };
+                            av_samples_fill_arrays(out_ptrs, nullptr, out_buf, ch, frame->nb_samples, (enum AVSampleFormat)format, 1);
+                            av_samples_copy(out_ptrs, frame->data, 0, 0, frame->nb_samples, ch, (enum AVSampleFormat)format);
+                        }
+
+                        qcap2_av_frame_set_pts(out_frame, frame->pts);
+                        qcap2_av_frame_set_sample_time(out_frame, dSampleTime);
+                    }
                 }
-
-                if (out_buf) {
-                    uint8_t* out_ptrs[AV_NUM_DATA_POINTERS] = { nullptr };
-                    av_samples_fill_arrays(out_ptrs, nullptr, out_buf, ch, frame->nb_samples, (enum AVSampleFormat)format, 1);
-                    av_samples_copy(out_ptrs, frame->data, 0, 0, frame->nb_samples, ch, (enum AVSampleFormat)format);
-                }
-
-                qcap2_av_frame_set_pts(out_frame, frame->pts);
-                qcap2_av_frame_set_sample_time(out_frame, dSampleTime);
-
-                qcap2_rcbuffer_unlock_data(out_rc);
+                qcap2_rcbuffer_end_access(out_rc, &out_access);
                 p->output_queue.push(out_rc);
                 if (rec_rc) {
                     qcap2_rcbuffer_release(rec_rc);
@@ -1356,8 +1397,8 @@ QRESULT qcap2_frame_pool_start(qcap2_frame_pool_t* pThis) {
             return QCAP_RS_ERROR_OUT_OF_MEMORY;
         }
 
-        qcap2_rcbuffer_t* rc = qcap2_rcbuffer_new(frame, [](PVOID pData) {
-            qcap2_av_frame_t* f = (qcap2_av_frame_t*)pData;
+        qcap2_rcbuffer_t* rc = qcap2_rcbuffer_new_from_av_frame(frame, frame, [](void* owner, void* user_data) {
+            qcap2_av_frame_t* f = (qcap2_av_frame_t*)owner;
             if (f) {
                 // For video frames, free_buffer handles the owned buffer.
                 // For audio frames, the buffer pointer was set externally via set_buffer,
@@ -1487,8 +1528,8 @@ QRESULT qcap2_packet_pool_start(qcap2_packet_pool_t* pThis) {
         qcap2_av_packet_init(packet);
         // Initially no buffer is allocated until size is known
 
-        qcap2_rcbuffer_t* rc = qcap2_rcbuffer_new(packet, [](PVOID pData) {
-            qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)pData;
+        qcap2_rcbuffer_t* rc = qcap2_rcbuffer_new_from_av_packet(packet, packet, [](void* owner, void* user_data) {
+            qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)owner;
             if (pkt) {
                 qcap2_av_packet_free_buffer(pkt);
                 delete pkt;
@@ -1530,23 +1571,26 @@ QRESULT qcap2_packet_pool_get_buffer(qcap2_packet_pool_t* pThis, int nPacketSize
 
     for (auto buf : p->pool) {
         if (qcap2_rcbuffer_use_count(buf) == 1) {
-            qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)qcap2_rcbuffer_get_data(buf);
-            if (pkt) {
-                if (nPacketSize > 0) {
-                    uint8_t* current_buf = nullptr;
-                    int current_size = 0;
-                    qcap2_av_packet_get_buffer(pkt, &current_buf, &current_size);
+            qcap2_rcbuffer_info_t info = { sizeof(info) };
+            if (qcap2_rcbuffer_query(buf, &info) == QCAP_RS_SUCCESSFUL) {
+                qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)info.owner;
+                if (pkt) {
+                    if (nPacketSize > 0) {
+                        uint8_t* current_buf = nullptr;
+                        int current_size = 0;
+                        qcap2_av_packet_get_buffer(pkt, &current_buf, &current_size);
 
-                    if (!current_buf || current_size < nPacketSize) {
-                        if (!qcap2_av_packet_alloc_buffer(pkt, nPacketSize)) {
-                            return QCAP_RS_ERROR_OUT_OF_MEMORY;
+                        if (!current_buf || current_size < nPacketSize) {
+                            if (!qcap2_av_packet_alloc_buffer(pkt, nPacketSize)) {
+                                return QCAP_RS_ERROR_OUT_OF_MEMORY;
+                            }
                         }
                     }
-                }
 
-                qcap2_rcbuffer_add_ref(buf);
-                *ppBuffer = buf;
-                return QCAP_RS_SUCCESSFUL;
+                    qcap2_rcbuffer_add_ref(buf);
+                    *ppBuffer = buf;
+                    return QCAP_RS_SUCCESSFUL;
+                }
             }
         }
     }
@@ -1827,12 +1871,23 @@ public:
             }
         }
 
-        PVOID out_data = qcap2_rcbuffer_lock_data(dst);
-        if (!out_data) {
+        qcap2_rcbuffer_access_t access = { sizeof(access) };
+        if (qcap2_rcbuffer_begin_access(dst, QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
             return QCAP_RS_ERROR_GENERAL;
         }
 
-        qcap2_av_frame_t* out_frame = (qcap2_av_frame_t*)out_data;
+        qcap2_rcbuffer_info_t info = { sizeof(info) };
+        if (qcap2_rcbuffer_query(dst, &info) != QCAP_RS_SUCCESSFUL) {
+            qcap2_rcbuffer_end_access(dst, &access);
+            return QCAP_RS_ERROR_GENERAL;
+        }
+
+        qcap2_av_frame_t* out_frame = (qcap2_av_frame_t*)info.owner;
+        if (!out_frame) {
+            qcap2_rcbuffer_end_access(dst, &access);
+            return QCAP_RS_ERROR_GENERAL;
+        }
+
         uint8_t* out_ptrs[4] = { nullptr };
         int out_strides[4] = { 0 };
         qcap2_av_frame_get_buffer1(out_frame, out_ptrs, out_strides);
@@ -1851,7 +1906,7 @@ public:
 
         int ret = sws_scale(sws_ctx, src_ptrs, src_strides, 0, src_h, dst_ptrs, dst_strides);
         if (ret < 0) {
-            qcap2_rcbuffer_unlock_data(dst);
+            qcap2_rcbuffer_end_access(dst, &access);
             return QCAP_RS_ERROR_GENERAL;
         }
 
@@ -1859,7 +1914,7 @@ public:
         qcap2_av_frame_set_sample_time(out_frame, dSampleTime);
         qcap2_av_frame_set_field_type(out_frame, nFieldType);
 
-        qcap2_rcbuffer_unlock_data(dst);
+        qcap2_rcbuffer_end_access(dst, &access);
         return QCAP_RS_SUCCESSFUL;
     }
 };
@@ -1990,13 +2045,26 @@ public:
             return QCAP_RS_SUCCESSFUL;
         }
 
-        PVOID out_data = qcap2_rcbuffer_lock_data(dst);
-        if (!out_data) {
+        qcap2_rcbuffer_access_t access = { sizeof(access) };
+        if (qcap2_rcbuffer_begin_access(dst, QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
             av_frame_free(&filtered_frame);
             return QCAP_RS_ERROR_GENERAL;
         }
 
-        qcap2_av_frame_t* out_frame = (qcap2_av_frame_t*)out_data;
+        qcap2_rcbuffer_info_t info = { sizeof(info) };
+        if (qcap2_rcbuffer_query(dst, &info) != QCAP_RS_SUCCESSFUL) {
+            qcap2_rcbuffer_end_access(dst, &access);
+            av_frame_free(&filtered_frame);
+            return QCAP_RS_ERROR_GENERAL;
+        }
+
+        qcap2_av_frame_t* out_frame = (qcap2_av_frame_t*)info.owner;
+        if (!out_frame) {
+            qcap2_rcbuffer_end_access(dst, &access);
+            av_frame_free(&filtered_frame);
+            return QCAP_RS_ERROR_GENERAL;
+        }
+
         uint8_t* out_ptrs[4] = { nullptr };
         int out_strides[4] = { 0 };
         qcap2_av_frame_get_buffer1(out_frame, out_ptrs, out_strides);
@@ -2020,7 +2088,7 @@ public:
         qcap2_av_frame_set_field_type(out_frame, nFieldType);
         qcap2_av_frame_set_video_property(out_frame, p->out_color_space, filtered_frame->width, filtered_frame->height);
 
-        qcap2_rcbuffer_unlock_data(dst);
+        qcap2_rcbuffer_end_access(dst, &access);
         av_frame_free(&filtered_frame);
         return QCAP_RS_SUCCESSFUL;
     }
@@ -2051,8 +2119,9 @@ static qcap2_rcbuffer_t* get_output_buffer(qcap2_video_scaler_priv_t* p) {
         return nullptr;
     }
 
-    qcap2_rcbuffer_t* rc = qcap2_rcbuffer_new(out_frame, [](PVOID pData) {
-        qcap2_av_frame_t* f = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_t* rc = qcap2_rcbuffer_new_from_av_frame(out_frame, out_frame, [](void* owner, void* user_data) {
+        (void)owner;
+        qcap2_av_frame_t* f = (qcap2_av_frame_t*)user_data;
         qcap2_av_frame_free_buffer(f);
         delete f;
     });
@@ -2277,29 +2346,44 @@ QRESULT qcap2_video_scaler_push(qcap2_video_scaler_t* pThis, qcap2_rcbuffer_t* p
     if (!pThis || !pRCBuffer) return QCAP_RS_ERROR_GENERAL;
     qcap2_video_scaler_priv_t* p = (qcap2_video_scaler_priv_t*)pThis;
 
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
+    qcap2_rcbuffer_access_t access;
+    memset(&access, 0, sizeof(access));
+    access.cb = sizeof(access);
+    if (qcap2_rcbuffer_begin_access(pRCBuffer, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
+        return QCAP_RS_ERROR_GENERAL;
+    }
 
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-    ULONG in_color = 0, in_w = 0, in_h = 0;
-    qcap2_av_frame_get_video_property(pFrame, &in_color, &in_w, &in_h);
+    qcap2_rcbuffer_video_info_t video_info;
+    memset(&video_info, 0, sizeof(video_info));
+    video_info.cb = sizeof(video_info);
+    if (qcap2_rcbuffer_get_video_info(pRCBuffer, &video_info) != QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
+        return QCAP_RS_ERROR_GENERAL;
+    }
+
+    ULONG in_color = video_info.color_space_type;
+    ULONG in_w = video_info.width;
+    ULONG in_h = video_info.height;
 
     uint8_t* in_ptrs[4] = { nullptr };
     int in_strides[4] = { 0 };
-    qcap2_av_frame_get_buffer1(pFrame, in_ptrs, in_strides);
+    for (int i = 0; i < 4; ++i) {
+        qcap2_rcbuffer_plane_t plane;
+        memset(&plane, 0, sizeof(plane));
+        plane.cb = sizeof(plane);
+        if (qcap2_rcbuffer_get_plane(pRCBuffer, i, &plane) == QCAP_RS_SUCCESSFUL) {
+            in_ptrs[i] = plane.data;
+            in_strides[i] = plane.stride;
+        }
+    }
 
-    int64_t nPTS = 0;
-    qcap2_av_frame_get_pts(pFrame, &nPTS);
-
-    double dSampleTime = 0.0;
-    qcap2_av_frame_get_sample_time(pFrame, &dSampleTime);
-
-    int nFieldType = 0;
-    qcap2_av_frame_get_field_type(pFrame, &nFieldType);
+    int64_t nPTS = video_info.pts;
+    double dSampleTime = video_info.sample_time;
+    int nFieldType = video_info.field_type;
 
     std::unique_lock<std::mutex> lock(*(p->mtx));
     if (!p->running) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
@@ -2312,18 +2396,18 @@ QRESULT qcap2_video_scaler_push(qcap2_video_scaler_t* pThis, qcap2_rcbuffer_t* p
     }
 
     if (!p->backend) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
     qcap2_rcbuffer_t* out_rc = get_output_buffer(p);
     if (!out_rc) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
     QRESULT qres = p->backend->scale(pRCBuffer, out_rc, in_color, in_w, in_h, nPTS, dSampleTime, nFieldType, in_ptrs, in_strides);
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
+    qcap2_rcbuffer_end_access(pRCBuffer, &access);
 
     if (qres != QCAP_RS_SUCCESSFUL) {
         qcap2_rcbuffer_release(out_rc);
@@ -2669,9 +2753,13 @@ static QRESULT encoder_receive_packets(qcap2_video_encoder_priv_t* p) {
 
         EncoderOutputPacket* out = nullptr;
         if (rec_rc) {
-            PVOID pData = qcap2_rcbuffer_get_data(rec_rc);
-            out = qcap2_container_of(pData, EncoderOutputPacket, packet);
-            if (out->buffer_size < (size_t)pkt->size) {
+            qcap2_rcbuffer_info_t r_info;
+            memset(&r_info, 0, sizeof(r_info));
+            r_info.cb = sizeof(r_info);
+            if (qcap2_rcbuffer_query(rec_rc, &r_info) == QCAP_RS_SUCCESSFUL) {
+                out = (EncoderOutputPacket*)r_info.owner;
+            }
+            if (out && out->buffer_size < (size_t)pkt->size) {
                 delete[] out->pkt_buffer;
                 out->pkt_buffer = new uint8_t[pkt->size];
                 out->buffer_size = pkt->size;
@@ -2681,8 +2769,9 @@ static QRESULT encoder_receive_packets(qcap2_video_encoder_priv_t* p) {
             qcap2_av_packet_init(&out->packet);
             out->pkt_buffer = new uint8_t[pkt->size];
             out->buffer_size = pkt->size;
-            out->rc_buffer = qcap2_rcbuffer_new(&out->packet, [](PVOID pData) {
-                EncoderOutputPacket* ep = qcap2_container_of(pData, EncoderOutputPacket, packet);
+            out->rc_buffer = qcap2_rcbuffer_new_from_av_packet(&out->packet, out, [](void* owner, void* user_data) {
+                (void)owner;
+                EncoderOutputPacket* ep = (EncoderOutputPacket*)user_data;
                 delete[] ep->pkt_buffer;
                 delete ep;
             });
@@ -3004,32 +3093,49 @@ QRESULT qcap2_video_encoder_push(qcap2_video_encoder_t* pThis, qcap2_rcbuffer_t*
     if (!pThis || !pRCBuffer) return QCAP_RS_ERROR_GENERAL;
     qcap2_video_encoder_priv_t* p = (qcap2_video_encoder_priv_t*)pThis;
 
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
+    qcap2_rcbuffer_access_t access;
+    memset(&access, 0, sizeof(access));
+    access.cb = sizeof(access);
+    if (qcap2_rcbuffer_begin_access(pRCBuffer, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
+        return QCAP_RS_ERROR_GENERAL;
+    }
 
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_video_info_t video_info;
+    memset(&video_info, 0, sizeof(video_info));
+    video_info.cb = sizeof(video_info);
+    if (qcap2_rcbuffer_get_video_info(pRCBuffer, &video_info) != QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
+        return QCAP_RS_ERROR_GENERAL;
+    }
 
-    // Get input frame properties
-    ULONG in_color = 0, in_w = 0, in_h = 0;
-    qcap2_av_frame_get_video_property(pFrame, &in_color, &in_w, &in_h);
+    ULONG in_color = video_info.color_space_type;
+    ULONG in_w = video_info.width;
+    ULONG in_h = video_info.height;
 
     uint8_t* in_ptrs[4] = { nullptr };
     int in_strides[4] = { 0 };
-    qcap2_av_frame_get_buffer1(pFrame, in_ptrs, in_strides);
+    for (int i = 0; i < 4; ++i) {
+        qcap2_rcbuffer_plane_t plane;
+        memset(&plane, 0, sizeof(plane));
+        plane.cb = sizeof(plane);
+        if (qcap2_rcbuffer_get_plane(pRCBuffer, i, &plane) == QCAP_RS_SUCCESSFUL) {
+            in_ptrs[i] = plane.data;
+            in_strides[i] = plane.stride;
+        }
+    }
 
-    int64_t nPTS = 0;
-    qcap2_av_frame_get_pts(pFrame, &nPTS);
+    int64_t nPTS = video_info.pts;
 
     std::lock_guard<std::mutex> lock(*(p->mtx));
     if (!p->running || !p->codec_ctx) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
     // Initialize/reinitialize pixel format converter if input changes
     if (p->cached_in_color != in_color || p->cached_in_w != in_w || p->cached_in_h != in_h) {
         if (!init_encoder_sws(p, in_color, in_w, in_h)) {
-            qcap2_rcbuffer_unlock_data(pRCBuffer);
+            qcap2_rcbuffer_end_access(pRCBuffer, &access);
             return QCAP_RS_ERROR_GENERAL;
         }
     }
@@ -3037,7 +3143,7 @@ QRESULT qcap2_video_encoder_push(qcap2_video_encoder_t* pThis, qcap2_rcbuffer_t*
     // Allocate AVFrame for the encoder
     AVFrame* av_frame = av_frame_alloc();
     if (!av_frame) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_OUT_OF_MEMORY;
     }
 
@@ -3048,14 +3154,14 @@ QRESULT qcap2_video_encoder_push(qcap2_video_encoder_t* pThis, qcap2_rcbuffer_t*
     int ret = av_frame_get_buffer(av_frame, p->frame_align > 0 ? p->frame_align : 32);
     if (ret < 0) {
         av_frame_free(&av_frame);
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_OUT_OF_MEMORY;
     }
 
     ret = av_frame_make_writable(av_frame);
     if (ret < 0) {
         av_frame_free(&av_frame);
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
@@ -3096,7 +3202,7 @@ QRESULT qcap2_video_encoder_push(qcap2_video_encoder_t* pThis, qcap2_rcbuffer_t*
         }
     }
 
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
+    qcap2_rcbuffer_end_access(pRCBuffer, &access);
 
     // Set PTS
     av_frame->pts = p->frame_counter++;
@@ -3304,8 +3410,9 @@ static qcap2_rcbuffer_t* get_decoder_output_buffer(qcap2_video_decoder_priv_t* p
         return nullptr;
     }
 
-    qcap2_rcbuffer_t* rc = qcap2_rcbuffer_new(out_frame, [](PVOID pData) {
-        qcap2_av_frame_t* f = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_t* rc = qcap2_rcbuffer_new_from_av_frame(out_frame, out_frame, [](void* owner, void* user_data) {
+        (void)owner;
+        qcap2_av_frame_t* f = (qcap2_av_frame_t*)user_data;
         qcap2_av_frame_free_buffer(f);
         delete f;
     });
@@ -3346,14 +3453,29 @@ static QRESULT decoder_receive_frames(qcap2_video_decoder_priv_t* p) {
             return QCAP_RS_ERROR_OUT_OF_MEMORY;
         }
 
-        PVOID out_data = qcap2_rcbuffer_lock_data(out_rc);
-        if (!out_data) {
+        qcap2_rcbuffer_access_t access = { sizeof(access) };
+        if (qcap2_rcbuffer_begin_access(out_rc, QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
             qcap2_rcbuffer_release(out_rc);
             av_frame_free(&decoded_frame);
             return QCAP_RS_ERROR_GENERAL;
         }
 
-        qcap2_av_frame_t* out_frame = (qcap2_av_frame_t*)out_data;
+        qcap2_rcbuffer_info_t info = { sizeof(info) };
+        if (qcap2_rcbuffer_query(out_rc, &info) != QCAP_RS_SUCCESSFUL) {
+            qcap2_rcbuffer_end_access(out_rc, &access);
+            qcap2_rcbuffer_release(out_rc);
+            av_frame_free(&decoded_frame);
+            return QCAP_RS_ERROR_GENERAL;
+        }
+
+        qcap2_av_frame_t* out_frame = (qcap2_av_frame_t*)info.owner;
+        if (!out_frame) {
+            qcap2_rcbuffer_end_access(out_rc, &access);
+            qcap2_rcbuffer_release(out_rc);
+            av_frame_free(&decoded_frame);
+            return QCAP_RS_ERROR_GENERAL;
+        }
+
         uint8_t* out_ptrs[4] = { nullptr };
         int out_strides[4] = { 0 };
         qcap2_av_frame_get_buffer1(out_frame, out_ptrs, out_strides);
@@ -3383,7 +3505,7 @@ static QRESULT decoder_receive_frames(qcap2_video_decoder_priv_t* p) {
             int num_planes = av_pix_fmt_count_planes(target_pix_fmt);
             for (int i = 0; i < num_planes && i < 4; ++i) {
                 int plane_h = (i == 0) ? decoded_frame->height : decoded_frame->height;
-                if (i > 0 && (target_pix_fmt == AV_PIX_FMT_YUV420P || target_pix_fmt == AV_PIX_FMT_NV12 || target_pix_fmt == AV_PIX_FMT_P010LE)) {
+                if (i > 0 && (target_pix_fmt == AV_PIX_FMT_YUV444P || target_pix_fmt == AV_PIX_FMT_YUV420P || target_pix_fmt == AV_PIX_FMT_NV12 || target_pix_fmt == AV_PIX_FMT_P010LE)) {
                     plane_h = (decoded_frame->height + 1) / 2;
                 }
                 int line_bytes = std::min(decoded_frame->linesize[i], dst_strides[i]);
@@ -3401,7 +3523,7 @@ static QRESULT decoder_receive_frames(qcap2_video_decoder_priv_t* p) {
         qcap2_av_frame_set_sample_time(out_frame, (double)decoded_frame->pts / 90000.0);
         qcap2_av_frame_set_video_property(out_frame, p->target_color, dst_w, dst_h);
 
-        qcap2_rcbuffer_unlock_data(out_rc);
+        qcap2_rcbuffer_end_access(out_rc, &access);
 
         p->output_queue.push(out_rc);
 
@@ -3713,28 +3835,35 @@ QRESULT qcap2_video_decoder_push(qcap2_video_decoder_t* pThis, qcap2_rcbuffer_t*
         return QCAP_RS_SUCCESSFUL;
     }
 
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
+    qcap2_rcbuffer_access_t access;
+    memset(&access, 0, sizeof(access));
+    access.cb = sizeof(access);
+    if (qcap2_rcbuffer_begin_access(pRCBuffer, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) != QCAP_RS_SUCCESSFUL) {
+        return QCAP_RS_ERROR_GENERAL;
+    }
 
-    qcap2_av_packet_t* pPacket = (qcap2_av_packet_t*)pData;
+    qcap2_rcbuffer_packet_info_t pkt_info;
+    memset(&pkt_info, 0, sizeof(pkt_info));
+    pkt_info.cb = sizeof(pkt_info);
+    if (qcap2_rcbuffer_get_packet_info(pRCBuffer, &pkt_info) != QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
+        return QCAP_RS_ERROR_GENERAL;
+    }
 
-    uint8_t* pBuf = nullptr;
-    int nSize = 0;
-    qcap2_av_packet_get_buffer(pPacket, &pBuf, &nSize);
-
-    int64_t nPTS = 0, nDTS = 0;
-    qcap2_av_packet_get_pts(pPacket, &nPTS);
-    qcap2_av_packet_get_dts(pPacket, &nDTS);
+    uint8_t* pBuf = pkt_info.data;
+    int nSize = pkt_info.size;
+    int64_t nPTS = pkt_info.pts;
+    int64_t nDTS = pkt_info.dts;
 
     std::lock_guard<std::mutex> lock(*(p->mtx));
     if (!p->running || !p->codec_ctx) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_GENERAL;
     }
 
     AVPacket* av_pkt = av_packet_alloc();
     if (!av_pkt) {
-        qcap2_rcbuffer_unlock_data(pRCBuffer);
+        qcap2_rcbuffer_end_access(pRCBuffer, &access);
         return QCAP_RS_ERROR_OUT_OF_MEMORY;
     }
 
@@ -3746,7 +3875,7 @@ QRESULT qcap2_video_decoder_push(qcap2_video_decoder_t* pThis, qcap2_rcbuffer_t*
     int ret = avcodec_send_packet(p->codec_ctx, av_pkt);
     av_packet_free(&av_pkt);
 
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
+    qcap2_rcbuffer_end_access(pRCBuffer, &access);
 
     if (ret < 0) {
         return QCAP_RS_ERROR_GENERAL;

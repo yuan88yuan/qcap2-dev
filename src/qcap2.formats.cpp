@@ -648,7 +648,13 @@ void qcap2_video_encoder_dynamic_set_property(qcap2_video_encoder_dynamic_proper
 // qcap2_media_info_t properties
 qcap2_media_info_t* qcap2_media_info_lock_from(qcap2_rcbuffer_t* pMediaInfo) {
     if (!pMediaInfo) return NULL;
-    return (qcap2_media_info_t*)qcap2_rcbuffer_lock_data(pMediaInfo);
+    qcap2_rcbuffer_info_t info;
+    memset(&info, 0, sizeof(info));
+    info.cb = sizeof(info);
+    if (qcap2_rcbuffer_query(pMediaInfo, &info) == QCAP_RS_SUCCESSFUL) {
+        return (qcap2_media_info_t*)info.owner;
+    }
+    return NULL;
 }
 
 int qcap2_media_info_get_video_count(qcap2_media_info_t* pThis) {

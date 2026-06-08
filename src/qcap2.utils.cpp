@@ -32,67 +32,62 @@ void qcap2_get_build_config(qcap2_build_config_t* pBuildConfig) {
 
 QRESULT qcap2_save_raw_video_frame(qcap2_rcbuffer_t* pRCBuffer, const char* prefix) {
     if (!pRCBuffer || !prefix) return QCAP_RS_ERROR_GENERAL;
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
 
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-    uint8_t* pBuffer = NULL;
-    int nStride = 0;
-    qcap2_av_frame_get_buffer(pFrame, &pBuffer, &nStride);
+    qcap2_rcbuffer_access_t access;
+    memset(&access, 0, sizeof(access));
+    access.cb = sizeof(access);
+    QRESULT r = qcap2_rcbuffer_begin_access(pRCBuffer, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access);
+    if (r != QCAP_RS_SUCCESSFUL) return QCAP_RS_ERROR_GENERAL;
 
-    if (pBuffer) {
-        ULONG nColorSpaceType = 0, nWidth = 0, nHeight = 0;
-        qcap2_av_frame_get_video_property(pFrame, &nColorSpaceType, &nWidth, &nHeight);
-
-        char filename[256];
-        snprintf(filename, sizeof(filename), "%s_%dx%d.raw", prefix, (int)nWidth, (int)nHeight);
-        FILE* fp = fopen(filename, "wb");
-        if (fp) {
-            // For a simple implementation, we just write stride * height
-            // True implementation would depend on the color space
-            fwrite(pBuffer, 1, nStride * nHeight, fp);
-            fclose(fp);
+    qcap2_rcbuffer_video_info_t vinfo;
+    memset(&vinfo, 0, sizeof(vinfo));
+    vinfo.cb = sizeof(vinfo);
+    if (qcap2_rcbuffer_get_video_info(pRCBuffer, &vinfo) == QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_plane_t plane0;
+        memset(&plane0, 0, sizeof(plane0));
+        plane0.cb = sizeof(plane0);
+        if (qcap2_rcbuffer_get_plane(pRCBuffer, 0, &plane0) == QCAP_RS_SUCCESSFUL && plane0.data) {
+            char filename[256];
+            snprintf(filename, sizeof(filename), "%s_%dx%d.raw", prefix, (int)vinfo.width, (int)vinfo.height);
+            FILE* fp = fopen(filename, "wb");
+            if (fp) {
+                size_t size = plane0.size > 0 ? plane0.size : (size_t)plane0.stride * vinfo.height;
+                fwrite(plane0.data, 1, size, fp);
+                fclose(fp);
+            }
         }
     }
 
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
+    qcap2_rcbuffer_end_access(pRCBuffer, &access);
     return QCAP_RS_SUCCESSFUL;
 }
 
 QRESULT qcap2_print_video_frame_info(qcap2_rcbuffer_t* pRCBuffer, const char* prefix) {
     if (!pRCBuffer || !prefix) return QCAP_RS_ERROR_GENERAL;
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
 
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-    ULONG nColorSpaceType = 0, nWidth = 0, nHeight = 0;
-    qcap2_av_frame_get_video_property(pFrame, &nColorSpaceType, &nWidth, &nHeight);
-    int64_t nPTS = 0;
-    qcap2_av_frame_get_pts(pFrame, &nPTS);
-
-    printf("[%s] Video Frame Info: ColorSpaceType=%lu, Width=%lu, Height=%lu, PTS=%lld\n",
-           prefix, nColorSpaceType, nWidth, nHeight, (long long)nPTS);
-
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
-    return QCAP_RS_SUCCESSFUL;
+    qcap2_rcbuffer_video_info_t vinfo;
+    memset(&vinfo, 0, sizeof(vinfo));
+    vinfo.cb = sizeof(vinfo);
+    if (qcap2_rcbuffer_get_video_info(pRCBuffer, &vinfo) == QCAP_RS_SUCCESSFUL) {
+        printf("[%s] Video Frame Info: ColorSpaceType=%lu, Width=%lu, Height=%lu, PTS=%lld\n",
+               prefix, vinfo.color_space_type, vinfo.width, vinfo.height, (long long)vinfo.pts);
+        return QCAP_RS_SUCCESSFUL;
+    }
+    return QCAP_RS_ERROR_GENERAL;
 }
 
 QRESULT qcap2_print_audio_sample_info(qcap2_rcbuffer_t* pRCBuffer, const char* prefix) {
     if (!pRCBuffer || !prefix) return QCAP_RS_ERROR_GENERAL;
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
 
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-    ULONG nChannels = 0, nSampleFmt = 0, nSampleFrequency = 0, nFrameSize = 0;
-    qcap2_av_frame_get_audio_property(pFrame, &nChannels, &nSampleFmt, &nSampleFrequency, &nFrameSize);
-    int64_t nPTS = 0;
-    qcap2_av_frame_get_pts(pFrame, &nPTS);
-
-    printf("[%s] Audio Sample Info: Channels=%lu, SampleFmt=%lu, SampleFreq=%lu, FrameSize=%lu, PTS=%lld\n",
-           prefix, nChannels, nSampleFmt, nSampleFrequency, nFrameSize, (long long)nPTS);
-
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
-    return QCAP_RS_SUCCESSFUL;
+    qcap2_rcbuffer_audio_info_t ainfo;
+    memset(&ainfo, 0, sizeof(ainfo));
+    ainfo.cb = sizeof(ainfo);
+    if (qcap2_rcbuffer_get_audio_info(pRCBuffer, &ainfo) == QCAP_RS_SUCCESSFUL) {
+        printf("[%s] Audio Sample Info: Channels=%lu, SampleFmt=%lu, SampleFreq=%lu, FrameSize=%lu, PTS=%lld\n",
+               prefix, ainfo.channels, ainfo.sample_fmt, ainfo.sample_frequency, ainfo.frame_size, (long long)ainfo.pts);
+        return QCAP_RS_SUCCESSFUL;
+    }
+    return QCAP_RS_ERROR_GENERAL;
 }
 
 QRESULT qcap2_print_packet_info(qcap2_rcbuffer_t* pRCBuffer, const char* prefix) {
@@ -103,24 +98,28 @@ QRESULT qcap2_print_packet_info(qcap2_rcbuffer_t* pRCBuffer, const char* prefix)
 
 QRESULT qcap2_fill_video_test_pattern(qcap2_rcbuffer_t* pRCBuffer, int nType) {
     if (!pRCBuffer) return QCAP_RS_ERROR_GENERAL;
-    PVOID pData = qcap2_rcbuffer_lock_data(pRCBuffer);
-    if (!pData) return QCAP_RS_ERROR_GENERAL;
 
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-    uint8_t* pBuffer = NULL;
-    int nStride = 0;
-    qcap2_av_frame_get_buffer(pFrame, &pBuffer, &nStride);
+    qcap2_rcbuffer_access_t access;
+    memset(&access, 0, sizeof(access));
+    access.cb = sizeof(access);
+    QRESULT r = qcap2_rcbuffer_begin_access(pRCBuffer, QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU, &access);
+    if (r != QCAP_RS_SUCCESSFUL) return QCAP_RS_ERROR_GENERAL;
 
-    if (pBuffer) {
-        ULONG nColorSpaceType = 0, nWidth = 0, nHeight = 0;
-        qcap2_av_frame_get_video_property(pFrame, &nColorSpaceType, &nWidth, &nHeight);
-
-        // Simple fill depending on nType, e.g., solid colors for known types
-        uint8_t fill_val = (uint8_t)(nType & 0xFF);
-        memset(pBuffer, fill_val, nStride * nHeight);
+    qcap2_rcbuffer_video_info_t vinfo;
+    memset(&vinfo, 0, sizeof(vinfo));
+    vinfo.cb = sizeof(vinfo);
+    if (qcap2_rcbuffer_get_video_info(pRCBuffer, &vinfo) == QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_plane_t plane0;
+        memset(&plane0, 0, sizeof(plane0));
+        plane0.cb = sizeof(plane0);
+        if (qcap2_rcbuffer_get_plane(pRCBuffer, 0, &plane0) == QCAP_RS_SUCCESSFUL && plane0.data) {
+            uint8_t fill_val = (uint8_t)(nType & 0xFF);
+            size_t size = plane0.size > 0 ? plane0.size : (size_t)plane0.stride * vinfo.height;
+            memset(plane0.data, fill_val, size);
+        }
     }
 
-    qcap2_rcbuffer_unlock_data(pRCBuffer);
+    qcap2_rcbuffer_end_access(pRCBuffer, &access);
     return QCAP_RS_SUCCESSFUL;
 }
 

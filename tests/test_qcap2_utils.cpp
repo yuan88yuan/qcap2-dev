@@ -46,7 +46,7 @@ void test_utils() {
     uint8_t* dummy_buffer = (uint8_t*)malloc(640*480*4);
     qcap2_av_frame_set_buffer(&frame, dummy_buffer, 640*4);
 
-    qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new(&frame, NULL);
+    qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new_from_av_frame(&frame, NULL, NULL);
 
     assert(qcap2_print_video_frame_info(pRCBuffer, "TestVideo") == QCAP_RS_SUCCESSFUL);
     assert(qcap2_print_audio_sample_info(pRCBuffer, "TestAudio") == QCAP_RS_SUCCESSFUL);

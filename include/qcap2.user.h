@@ -7,10 +7,6 @@
 extern "C" {
 #endif /* __cplusplus */
 
-// qcap2_rcbuffer_t
-qcap2_rcbuffer_t* qcap2_rcbuffer_new_av_frame();
-qcap2_rcbuffer_t* qcap2_rcbuffer_new_av_packet();
-
 // qcap2_video_source_t
 QRESULT qcap2_video_source_fire_event(qcap2_video_source_t* pThis, int n);
 

@@ -1,4 +1,5 @@
 #include "qcap2.buffer.h"
+#undef qcap2_rcbuffer_new
 #include "qcap2.user.h"
 #include "qcap2.dmabuf.h"
 #include <string.h>
@@ -15,9 +16,18 @@ extern "C" {
 #endif
 
 typedef struct _qcap2_rcbuffer_priv_t {
-    PVOID pData;
-    ULONG nDataSize;
-    qcap2_on_free_resource_t pOnFreeResource;
+    // New model fields:
+    void* owner;
+    void* user_data;
+    qcap2_rcbuffer_destroy_t destroy;
+
+    qcap2_rcbuffer_content_type_t content_type;
+    uint32_t memory_flags;
+    uint32_t capability_flags;
+
+    const qcap2_rcbuffer_ops_t* ops;
+
+    // Refcounts:
     std::atomic<int32_t> use_count;
     std::atomic<int32_t> res_count;
     std::atomic<bool> resource_freed;
@@ -97,8 +107,8 @@ static void qcap2_rcbuffer_release_resource(qcap2_rcbuffer_priv_t* p) {
     if (nResCount == 0) {
         bool bExpected = false;
         if (p->resource_freed.compare_exchange_strong(bExpected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            if (p->pOnFreeResource) {
-                p->pOnFreeResource(p->pData);
+            if (p->destroy) {
+                p->destroy(p->owner, p->user_data);
             }
         }
     }
@@ -108,12 +118,18 @@ static void qcap2_rcbuffer_release_resource(qcap2_rcbuffer_priv_t* p) {
 
 // --- qcap2_rcbuffer_t ---
 
-qcap2_rcbuffer_t* qcap2_rcbuffer_new(PVOID pData, qcap2_on_free_resource_t pOnFreeResource) {
+qcap2_rcbuffer_t* qcap2_rcbuffer_new(const qcap2_rcbuffer_create_info_t* info) {
+    if (!info || info->cb < sizeof(qcap2_rcbuffer_create_info_t)) return NULL;
     qcap2_rcbuffer_priv_t* p = new (std::nothrow) qcap2_rcbuffer_priv_t();
     if (p) {
-        p->pData = pData;
-        p->nDataSize = 0;
-        p->pOnFreeResource = pOnFreeResource;
+        p->owner = info->owner;
+        p->user_data = info->user_data;
+        p->destroy = info->destroy;
+        p->content_type = info->content_type;
+        p->memory_flags = info->memory_flags;
+        p->capability_flags = info->capability_flags;
+        p->ops = info->ops;
+
         p->use_count.store(1, std::memory_order_release);
         p->res_count.store(1, std::memory_order_release);
         p->resource_freed.store(false, std::memory_order_release);
@@ -121,27 +137,10 @@ qcap2_rcbuffer_t* qcap2_rcbuffer_new(PVOID pData, qcap2_on_free_resource_t pOnFr
     return (qcap2_rcbuffer_t*)p;
 }
 
+
+
 void qcap2_rcbuffer_delete(qcap2_rcbuffer_t* pRCBuffer) {
     qcap2_rcbuffer_release(pRCBuffer);
-}
-
-void qcap2_rcbuffer_to_buffer(qcap2_rcbuffer_t* pRCBuffer, BYTE** ppBuffer, ULONG* pBufferSize) {
-    if (ppBuffer) *ppBuffer = NULL;
-    if (pBufferSize) *pBufferSize = 0;
-
-    if (pRCBuffer) {
-        qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)pRCBuffer;
-        if (ppBuffer) *ppBuffer = (BYTE*)p->pData;
-        if (pBufferSize) *pBufferSize = p->nDataSize;
-    }
-}
-
-qcap2_rcbuffer_t* qcap2_rcbuffer_cast(BYTE * pBuffer, ULONG nBufferLen) {
-    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)qcap2_rcbuffer_new(pBuffer, NULL);
-    if (p) {
-        p->nDataSize = nBufferLen;
-    }
-    return (qcap2_rcbuffer_t*)p;
 }
 
 void qcap2_rcbuffer_add_ref(qcap2_rcbuffer_t* pRCBuffer) {
@@ -161,30 +160,6 @@ void qcap2_rcbuffer_release(qcap2_rcbuffer_t* pRCBuffer) {
     }
 }
 
-PVOID qcap2_rcbuffer_lock_data(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)pRCBuffer;
-        if (!p->resource_freed.load(std::memory_order_acquire) &&
-            qcap2_atomic_inc_if_positive(p->res_count) > 0) {
-            return p->pData;
-        }
-    }
-    return NULL;
-}
-
-void qcap2_rcbuffer_unlock_data(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        qcap2_rcbuffer_release_resource((qcap2_rcbuffer_priv_t*)pRCBuffer);
-    }
-}
-
-PVOID qcap2_rcbuffer_get_data(qcap2_rcbuffer_t* pRCBuffer) {
-    if (pRCBuffer) {
-        return ((qcap2_rcbuffer_priv_t*)pRCBuffer)->pData;
-    }
-    return NULL;
-}
-
 int32_t qcap2_rcbuffer_use_count(qcap2_rcbuffer_t* pRCBuffer) {
     if (pRCBuffer) {
         return ((qcap2_rcbuffer_priv_t*)pRCBuffer)->use_count.load(std::memory_order_acquire);
@@ -197,6 +172,171 @@ int32_t qcap2_rcbuffer_res_count(qcap2_rcbuffer_t* pRCBuffer) {
         return ((qcap2_rcbuffer_priv_t*)pRCBuffer)->res_count.load(std::memory_order_acquire);
     }
     return 0;
+}
+
+static QRESULT qcap2_rcbuffer_validate_access(const qcap2_rcbuffer_priv_t* p, uint32_t flags) {
+    if (!p) return QCAP_RS_ERROR_INVALID_PARAMETER;
+
+    if ((flags & QCAP2_RCBUFFER_ACCESS_CPU) &&
+        (flags & QCAP2_RCBUFFER_ACCESS_READ) &&
+        !(p->capability_flags & QCAP2_RCBUFFER_CAP_CPU_READ)) {
+        return QCAP_RS_ERROR_NON_SUPPORT;
+    }
+
+    if ((flags & QCAP2_RCBUFFER_ACCESS_CPU) &&
+        (flags & QCAP2_RCBUFFER_ACCESS_WRITE) &&
+        !(p->capability_flags & QCAP2_RCBUFFER_CAP_CPU_WRITE)) {
+        return QCAP_RS_ERROR_NON_SUPPORT;
+    }
+
+    if ((flags & QCAP2_RCBUFFER_ACCESS_ZERO_COPY) &&
+        !(p->capability_flags & QCAP2_RCBUFFER_CAP_ZERO_COPY)) {
+        return QCAP_RS_ERROR_NON_SUPPORT;
+    }
+
+    if ((flags & QCAP2_RCBUFFER_ACCESS_DEVICE) &&
+        !(p->capability_flags & (QCAP2_RCBUFFER_CAP_NATIVE_HANDLE |
+                                 QCAP2_RCBUFFER_CAP_DEVICE_SYNC |
+                                 QCAP2_RCBUFFER_CAP_ZERO_COPY))) {
+        return QCAP_RS_ERROR_NON_SUPPORT;
+    }
+
+    return QCAP_RS_SUCCESSFUL;
+}
+
+QRESULT qcap2_rcbuffer_begin_access(qcap2_rcbuffer_t* buf, uint32_t flags, qcap2_rcbuffer_access_t* access) {
+    if (!buf || !access || access->cb < sizeof(qcap2_rcbuffer_access_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    QRESULT res = qcap2_rcbuffer_validate_access(p, flags);
+    if (res != QCAP_RS_SUCCESSFUL) return res;
+
+    if (p->resource_freed.load(std::memory_order_acquire) ||
+        qcap2_atomic_inc_if_positive(p->res_count) <= 0) {
+        return QCAP_RS_ERROR_GENERAL;
+    }
+
+    access->requested_flags = flags;
+    access->granted_flags = 0;
+    access->memory_flags = p->memory_flags;
+    access->backend_state = NULL;
+
+    if (p->ops && p->ops->begin_access) {
+        res = p->ops->begin_access(p->owner, p->user_data, flags, access);
+    } else {
+        access->granted_flags = flags;
+    }
+
+    if (res != QCAP_RS_SUCCESSFUL) {
+        qcap2_rcbuffer_release_resource(p);
+    }
+    return res;
+}
+
+void qcap2_rcbuffer_end_access(qcap2_rcbuffer_t* buf, qcap2_rcbuffer_access_t* access) {
+    if (!buf || !access) return;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->end_access) {
+        p->ops->end_access(p->owner, p->user_data, access);
+    }
+
+    qcap2_rcbuffer_release_resource(p);
+}
+
+QRESULT qcap2_rcbuffer_query(qcap2_rcbuffer_t* buf, qcap2_rcbuffer_info_t* info) {
+    if (!buf || !info || info->cb < sizeof(qcap2_rcbuffer_info_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->query) {
+        return p->ops->query(p->owner, p->user_data, info);
+    }
+
+    info->content_type = p->content_type;
+    info->memory_flags = p->memory_flags;
+    info->capability_flags = p->capability_flags;
+    info->owner = p->owner;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+QRESULT qcap2_rcbuffer_get_video_info(qcap2_rcbuffer_t* buf, qcap2_rcbuffer_video_info_t* info) {
+    if (!buf || !info || info->cb < sizeof(qcap2_rcbuffer_video_info_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->get_video_info) {
+        return p->ops->get_video_info(p->owner, p->user_data, info);
+    }
+    return QCAP_RS_ERROR_GENERAL;
+}
+
+QRESULT qcap2_rcbuffer_set_video_info(qcap2_rcbuffer_t* buf, const qcap2_rcbuffer_video_info_t* info) {
+    if (!buf || !info || info->cb < sizeof(qcap2_rcbuffer_video_info_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->set_video_info) {
+        return p->ops->set_video_info(p->owner, p->user_data, info);
+    }
+    return QCAP_RS_ERROR_GENERAL;
+}
+
+QRESULT qcap2_rcbuffer_get_plane(qcap2_rcbuffer_t* buf, int plane, qcap2_rcbuffer_plane_t* out) {
+    if (!buf || !out || out->cb < sizeof(qcap2_rcbuffer_plane_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->get_plane) {
+        return p->ops->get_plane(p->owner, p->user_data, plane, out);
+    }
+    return QCAP_RS_ERROR_GENERAL;
+}
+
+QRESULT qcap2_rcbuffer_get_packet_info(qcap2_rcbuffer_t* buf, qcap2_rcbuffer_packet_info_t* info) {
+    if (!buf || !info || info->cb < sizeof(qcap2_rcbuffer_packet_info_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->get_packet_info) {
+        return p->ops->get_packet_info(p->owner, p->user_data, info);
+    }
+    return QCAP_RS_ERROR_GENERAL;
+}
+
+QRESULT qcap2_rcbuffer_set_packet_info(qcap2_rcbuffer_t* buf, const qcap2_rcbuffer_packet_info_t* info) {
+    if (!buf || !info || info->cb < sizeof(qcap2_rcbuffer_packet_info_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->set_packet_info) {
+        return p->ops->set_packet_info(p->owner, p->user_data, info);
+    }
+    return QCAP_RS_ERROR_GENERAL;
+}
+
+QRESULT qcap2_rcbuffer_get_handle(qcap2_rcbuffer_t* buf, qcap2_rcbuffer_handle_type_t type, qcap2_rcbuffer_handle_t* out) {
+    if (!buf || !out || out->cb < sizeof(qcap2_rcbuffer_handle_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->get_handle) {
+        return p->ops->get_handle(p->owner, p->user_data, type, out);
+    }
+    return QCAP_RS_ERROR_GENERAL;
+}
+
+QRESULT qcap2_rcbuffer_get_audio_info(qcap2_rcbuffer_t* buf, qcap2_rcbuffer_audio_info_t* info) {
+    if (!buf || !info || info->cb < sizeof(qcap2_rcbuffer_audio_info_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->get_audio_info) {
+        return p->ops->get_audio_info(p->owner, p->user_data, info);
+    }
+    return QCAP_RS_ERROR_GENERAL;
+}
+
+QRESULT qcap2_rcbuffer_set_audio_info(qcap2_rcbuffer_t* buf, const qcap2_rcbuffer_audio_info_t* info) {
+    if (!buf || !info || info->cb < sizeof(qcap2_rcbuffer_audio_info_t)) return QCAP_RS_ERROR_INVALID_PARAMETER;
+    qcap2_rcbuffer_priv_t* p = (qcap2_rcbuffer_priv_t*)buf;
+
+    if (p->ops && p->ops->set_audio_info) {
+        return p->ops->set_audio_info(p->owner, p->user_data, info);
+    }
+    return QCAP_RS_ERROR_GENERAL;
 }
 
 // --- qcap2_av_frame_t ---
@@ -642,56 +782,258 @@ void qcap2_av_packet_free_buffer(qcap2_av_packet_t* pPacket) {
 
 // --- qcap2.user.h rc-buffer helpers ---
 
-typedef struct _qcap2_rcbuffer_av_frame_owner_t {
-    PVOID pOwner;
-    qcap2_av_frame_t av_frame;
-} qcap2_rcbuffer_av_frame_owner_t;
+struct WrappedFrameBackend {
+    qcap2_av_frame_t* frame;
+    void* user_data;
+    qcap2_rcbuffer_destroy_t destroy;
+};
 
-typedef struct _qcap2_rcbuffer_av_packet_owner_t {
-    PVOID pOwner;
-    qcap2_av_packet_t av_packet;
-} qcap2_rcbuffer_av_packet_owner_t;
-
-static void qcap2_rcbuffer_free_av_frame(PVOID pData) {
-    if (!pData) return;
-    qcap2_rcbuffer_av_frame_owner_t* pOwner = qcap2_container_of(pData, qcap2_rcbuffer_av_frame_owner_t, av_frame);
-    qcap2_av_frame_free_buffer(&pOwner->av_frame);
-    delete pOwner;
-}
-
-static void qcap2_rcbuffer_free_av_packet(PVOID pData) {
-    if (!pData) return;
-    qcap2_rcbuffer_av_packet_owner_t* pOwner = qcap2_container_of(pData, qcap2_rcbuffer_av_packet_owner_t, av_packet);
-    qcap2_av_packet_free_buffer(&pOwner->av_packet);
-    delete pOwner;
-}
-
-qcap2_rcbuffer_t* qcap2_rcbuffer_new_av_frame() {
-    qcap2_rcbuffer_av_frame_owner_t* pOwner = new (std::nothrow) qcap2_rcbuffer_av_frame_owner_t();
-    if (!pOwner) return NULL;
-
-    pOwner->pOwner = pOwner;
-    qcap2_av_frame_init(&pOwner->av_frame);
-
-    qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new(&pOwner->av_frame, qcap2_rcbuffer_free_av_frame);
-    if (!pRCBuffer) {
-        delete pOwner;
+static void wrapped_frame_destroy(void* owner, void* user_data) {
+    (void)user_data;
+    WrappedFrameBackend* b = (WrappedFrameBackend*)owner;
+    if (b->destroy) {
+        void* callback_owner = b->user_data ? b->user_data : b->frame;
+        b->destroy(callback_owner, b->user_data);
     }
-    return pRCBuffer;
+    delete b;
 }
 
-qcap2_rcbuffer_t* qcap2_rcbuffer_new_av_packet() {
-    qcap2_rcbuffer_av_packet_owner_t* pOwner = new (std::nothrow) qcap2_rcbuffer_av_packet_owner_t();
-    if (!pOwner) return NULL;
-
-    pOwner->pOwner = pOwner;
-    qcap2_av_packet_init(&pOwner->av_packet);
-
-    qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new(&pOwner->av_packet, qcap2_rcbuffer_free_av_packet);
-    if (!pRCBuffer) {
-        delete pOwner;
+static QRESULT wrapped_frame_query(void* owner, void* user_data, qcap2_rcbuffer_info_t* info) {
+    (void)user_data;
+    WrappedFrameBackend* b = (WrappedFrameBackend*)owner;
+    ULONG channels = 0, sample_fmt = 0, sample_freq = 0, frame_size = 0;
+    qcap2_av_frame_get_audio_property(b->frame, &channels, &sample_fmt, &sample_freq, &frame_size);
+    if (channels > 0 || frame_size > 0) {
+        info->content_type = QCAP2_RCBUFFER_CONTENT_AUDIO_FRAME;
+    } else {
+        info->content_type = QCAP2_RCBUFFER_CONTENT_VIDEO_FRAME;
     }
-    return pRCBuffer;
+    info->memory_flags = QCAP2_RCBUFFER_MEMORY_SYSTEM;
+    info->capability_flags = QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_VIDEO_PLANES;
+    info->owner = b->user_data;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT wrapped_frame_get_video_info(void* owner, void* user_data, qcap2_rcbuffer_video_info_t* info) {
+    (void)user_data;
+    WrappedFrameBackend* b = (WrappedFrameBackend*)owner;
+    ULONG color_space = 0, width = 0, height = 0;
+    qcap2_av_frame_get_video_property(b->frame, &color_space, &width, &height);
+    int field_type = 0;
+    qcap2_av_frame_get_field_type(b->frame, &field_type);
+    int64_t pts = 0;
+    qcap2_av_frame_get_pts(b->frame, &pts);
+    double sample_time = 0.0;
+    qcap2_av_frame_get_sample_time(b->frame, &sample_time);
+
+    info->color_space_type = color_space;
+    info->width = width;
+    info->height = height;
+    info->field_type = field_type;
+    info->pts = pts;
+    info->sample_time = sample_time;
+    switch (color_space) {
+    case QCAP_COLORSPACE_TYPE_NV12:
+    case QCAP_COLORSPACE_TYPE_P010:
+    case QCAP_COLORSPACE_TYPE_P210:
+        info->plane_count = 2;
+        break;
+    case QCAP_COLORSPACE_TYPE_YV12:
+    case QCAP_COLORSPACE_TYPE_I420:
+    case QCAP_COLORSPACE_TYPE_YV24:
+        info->plane_count = 3;
+        break;
+    default:
+        info->plane_count = 1;
+        break;
+    }
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT wrapped_frame_set_video_info(void* owner, void* user_data, const qcap2_rcbuffer_video_info_t* info) {
+    (void)user_data;
+    WrappedFrameBackend* b = (WrappedFrameBackend*)owner;
+    qcap2_av_frame_set_video_property(b->frame, info->color_space_type, info->width, info->height);
+    qcap2_av_frame_set_field_type(b->frame, info->field_type);
+    qcap2_av_frame_set_pts(b->frame, info->pts);
+    qcap2_av_frame_set_sample_time(b->frame, info->sample_time);
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT wrapped_frame_get_plane(void* owner, void* user_data, int plane, qcap2_rcbuffer_plane_t* out) {
+    (void)user_data;
+    WrappedFrameBackend* b = (WrappedFrameBackend*)owner;
+    uint8_t* buffers[4] = {0};
+    int strides[4] = {0};
+    qcap2_av_frame_get_buffer1(b->frame, buffers, strides);
+
+    if (plane < 0 || plane >= 4 || !buffers[plane]) {
+        return QCAP_RS_ERROR_INVALID_PARAMETER;
+    }
+
+    out->data = buffers[plane];
+    out->stride = strides[plane];
+    out->size = 0;
+    out->fd = -1;
+    out->offset = 0;
+    out->native_handle = NULL;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT wrapped_frame_get_audio_info(void* owner, void* user_data, qcap2_rcbuffer_audio_info_t* info) {
+    (void)user_data;
+    WrappedFrameBackend* b = (WrappedFrameBackend*)owner;
+    ULONG channels = 0, sample_fmt = 0, sample_freq = 0, frame_size = 0;
+    qcap2_av_frame_get_audio_property(b->frame, &channels, &sample_fmt, &sample_freq, &frame_size);
+    int64_t pts = 0;
+    qcap2_av_frame_get_pts(b->frame, &pts);
+    double sample_time = 0.0;
+    qcap2_av_frame_get_sample_time(b->frame, &sample_time);
+
+    info->channels = channels;
+    info->sample_fmt = sample_fmt;
+    info->sample_frequency = sample_freq;
+    info->frame_size = frame_size;
+    info->pts = pts;
+    info->sample_time = sample_time;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT wrapped_frame_set_audio_info(void* owner, void* user_data, const qcap2_rcbuffer_audio_info_t* info) {
+    (void)user_data;
+    WrappedFrameBackend* b = (WrappedFrameBackend*)owner;
+    qcap2_av_frame_set_audio_property(b->frame, info->channels, info->sample_fmt, info->sample_frequency, info->frame_size);
+    qcap2_av_frame_set_pts(b->frame, info->pts);
+    qcap2_av_frame_set_sample_time(b->frame, info->sample_time);
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static const qcap2_rcbuffer_ops_t wrapped_frame_ops = {
+    sizeof(qcap2_rcbuffer_ops_t),
+    NULL, NULL,
+    wrapped_frame_query,
+    wrapped_frame_get_video_info,
+    wrapped_frame_set_video_info,
+    wrapped_frame_get_plane,
+    NULL, NULL, NULL,
+    wrapped_frame_get_audio_info,
+    wrapped_frame_set_audio_info
+};
+
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_from_av_frame(qcap2_av_frame_t* pFrame, void* owner, qcap2_rcbuffer_destroy_t destroy) {
+    if (!pFrame) return NULL;
+    WrappedFrameBackend* b = new (std::nothrow) WrappedFrameBackend();
+    if (!b) return NULL;
+    b->frame = pFrame;
+    b->user_data = owner;
+    b->destroy = destroy;
+
+    qcap2_rcbuffer_create_info_t info = {
+        sizeof(info),
+        b,
+        NULL,
+        wrapped_frame_destroy,
+        QCAP2_RCBUFFER_CONTENT_VIDEO_FRAME,
+        QCAP2_RCBUFFER_MEMORY_SYSTEM,
+        QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_VIDEO_PLANES,
+        &wrapped_frame_ops
+    };
+    return qcap2_rcbuffer_new(&info);
+}
+
+struct WrappedPacketBackend {
+    qcap2_av_packet_t* packet;
+    void* user_data;
+    qcap2_rcbuffer_destroy_t destroy;
+};
+
+static void wrapped_packet_destroy(void* owner, void* user_data) {
+    (void)user_data;
+    WrappedPacketBackend* b = (WrappedPacketBackend*)owner;
+    if (b->destroy) {
+        void* callback_owner = b->user_data ? b->user_data : b->packet;
+        b->destroy(callback_owner, b->user_data);
+    }
+    delete b;
+}
+
+static QRESULT wrapped_packet_query(void* owner, void* user_data, qcap2_rcbuffer_info_t* info) {
+    (void)user_data;
+    WrappedPacketBackend* b = (WrappedPacketBackend*)owner;
+    info->content_type = QCAP2_RCBUFFER_CONTENT_PACKET;
+    info->memory_flags = QCAP2_RCBUFFER_MEMORY_SYSTEM;
+    info->capability_flags = QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_PACKET_BYTES;
+    info->owner = b->user_data;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT wrapped_packet_get_packet_info(void* owner, void* user_data, qcap2_rcbuffer_packet_info_t* info) {
+    (void)user_data;
+    WrappedPacketBackend* b = (WrappedPacketBackend*)owner;
+    int stream_idx = 0;
+    BOOL is_key = FALSE;
+    qcap2_av_packet_get_property(b->packet, &stream_idx, &is_key);
+    int64_t pts = 0, dts = 0;
+    qcap2_av_packet_get_pts(b->packet, &pts);
+    qcap2_av_packet_get_dts(b->packet, &dts);
+    double stime = 0.0;
+    qcap2_av_packet_get_sample_time(b->packet, &stime);
+    uint8_t* data = NULL;
+    int size = 0;
+    qcap2_av_packet_get_buffer(b->packet, &data, &size);
+
+    info->stream_index = stream_idx;
+    info->is_keyframe = is_key;
+    info->pts = pts;
+    info->dts = dts;
+    info->sample_time = stime;
+    info->data = data;
+    info->size = size;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT wrapped_packet_set_packet_info(void* owner, void* user_data, const qcap2_rcbuffer_packet_info_t* info) {
+    (void)user_data;
+    WrappedPacketBackend* b = (WrappedPacketBackend*)owner;
+    qcap2_av_packet_set_property(b->packet, info->stream_index, info->is_keyframe);
+    qcap2_av_packet_set_pts(b->packet, info->pts);
+    qcap2_av_packet_set_dts(b->packet, info->dts);
+    qcap2_av_packet_set_sample_time(b->packet, info->sample_time);
+    if (info->data && info->size > 0) {
+        qcap2_av_packet_set_buffer(b->packet, info->data, info->size);
+    }
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static const qcap2_rcbuffer_ops_t wrapped_packet_ops = {
+    sizeof(qcap2_rcbuffer_ops_t),
+    NULL, NULL,
+    wrapped_packet_query,
+    NULL, NULL, NULL,
+    wrapped_packet_get_packet_info,
+    wrapped_packet_set_packet_info,
+    NULL, NULL, NULL
+};
+
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_from_av_packet(qcap2_av_packet_t* pPacket, void* owner, qcap2_rcbuffer_destroy_t destroy) {
+    if (!pPacket) return NULL;
+    WrappedPacketBackend* b = new (std::nothrow) WrappedPacketBackend();
+    if (!b) return NULL;
+    b->packet = pPacket;
+    b->user_data = owner;
+    b->destroy = destroy;
+
+    qcap2_rcbuffer_create_info_t info = {
+        sizeof(info),
+        b,
+        NULL,
+        wrapped_packet_destroy,
+        QCAP2_RCBUFFER_CONTENT_PACKET,
+        QCAP2_RCBUFFER_MEMORY_SYSTEM,
+        QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_PACKET_BYTES,
+        &wrapped_packet_ops
+    };
+    return qcap2_rcbuffer_new(&info);
 }
 
 QRESULT qcap2_av_frame_set_dmabuf(qcap2_av_frame_t* pFrame, qcap2_dmabuf_t* pDMABuf) {
@@ -819,6 +1161,527 @@ QRESULT qcap2_av_frame_alloc_mapped_dmabuf(qcap2_av_frame_t* pFrame, int nSize, 
 
 QRESULT qcap2_av_frame_free_mapped_dmabuf(qcap2_av_frame_t* pFrame) {
     return qcap2_av_frame_free_dmabuf(pFrame);
+}
+
+// factory implementations
+
+struct SystemVideoFrameBackend {
+    qcap2_av_frame_t frame;
+    qcap2_rcbuffer_video_info_t video_info;
+    
+    SystemVideoFrameBackend() {
+        qcap2_av_frame_init(&frame);
+        memset(&video_info, 0, sizeof(video_info));
+        video_info.cb = sizeof(video_info);
+    }
+    ~SystemVideoFrameBackend() {
+        qcap2_av_frame_free_buffer(&frame);
+    }
+};
+
+static void system_video_frame_destroy(void* owner, void* user_data) {
+    (void)user_data;
+    delete (SystemVideoFrameBackend*)owner;
+}
+
+static QRESULT system_video_frame_query(void* owner, void* user_data, qcap2_rcbuffer_info_t* info) {
+    (void)user_data;
+    info->content_type = QCAP2_RCBUFFER_CONTENT_VIDEO_FRAME;
+    info->memory_flags = QCAP2_RCBUFFER_MEMORY_SYSTEM;
+    info->capability_flags = QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_VIDEO_PLANES;
+    info->owner = owner;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT system_video_frame_get_video_info(void* owner, void* user_data, qcap2_rcbuffer_video_info_t* info) {
+    (void)user_data;
+    SystemVideoFrameBackend* b = (SystemVideoFrameBackend*)owner;
+    *info = b->video_info;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT system_video_frame_set_video_info(void* owner, void* user_data, const qcap2_rcbuffer_video_info_t* info) {
+    (void)user_data;
+    SystemVideoFrameBackend* b = (SystemVideoFrameBackend*)owner;
+    b->video_info = *info;
+    qcap2_av_frame_set_video_property(&b->frame, info->color_space_type, info->width, info->height);
+    qcap2_av_frame_set_field_type(&b->frame, info->field_type);
+    qcap2_av_frame_set_pts(&b->frame, info->pts);
+    qcap2_av_frame_set_sample_time(&b->frame, info->sample_time);
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT system_video_frame_get_plane(void* owner, void* user_data, int plane, qcap2_rcbuffer_plane_t* out) {
+    (void)user_data;
+    SystemVideoFrameBackend* b = (SystemVideoFrameBackend*)owner;
+    uint8_t* buffers[4] = {0};
+    int strides[4] = {0};
+    qcap2_av_frame_get_buffer1(&b->frame, buffers, strides);
+
+    if (plane < 0 || plane >= 4 || !buffers[plane]) {
+        return QCAP_RS_ERROR_INVALID_PARAMETER;
+    }
+
+    out->data = buffers[plane];
+    out->stride = strides[plane];
+    out->size = 0;
+    out->fd = -1;
+    out->offset = 0;
+    out->native_handle = NULL;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static const qcap2_rcbuffer_ops_t system_video_frame_ops = {
+    sizeof(qcap2_rcbuffer_ops_t),
+    NULL, // begin_access
+    NULL, // end_access
+    system_video_frame_query,
+    system_video_frame_get_video_info,
+    system_video_frame_set_video_info,
+    system_video_frame_get_plane,
+    NULL, // get_packet_info
+    NULL, // set_packet_info
+    NULL, // get_handle
+    NULL, // get_audio_info
+    NULL  // set_audio_info
+};
+
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_system_video_frame(const qcap2_video_frame_create_info_t* info) {
+    if (!info || info->cb < sizeof(qcap2_video_frame_create_info_t)) return NULL;
+    
+    SystemVideoFrameBackend* b = new (std::nothrow) SystemVideoFrameBackend();
+    if (!b) return NULL;
+    
+    qcap2_av_frame_set_video_property(&b->frame, info->color_space_type, info->width, info->height);
+    if (!qcap2_av_frame_alloc_buffer(&b->frame, info->align, info->valign)) {
+        delete b;
+        return NULL;
+    }
+
+    b->video_info.color_space_type = info->color_space_type;
+    b->video_info.width = info->width;
+    b->video_info.height = info->height;
+    b->video_info.field_type = QCAP2_FIELD_NONE;
+    b->video_info.pts = 0;
+    b->video_info.sample_time = 0.0;
+    switch (info->color_space_type) {
+    case QCAP_COLORSPACE_TYPE_NV12:
+    case QCAP_COLORSPACE_TYPE_P010:
+    case QCAP_COLORSPACE_TYPE_P210:
+        b->video_info.plane_count = 2;
+        break;
+    case QCAP_COLORSPACE_TYPE_YV12:
+    case QCAP_COLORSPACE_TYPE_I420:
+    case QCAP_COLORSPACE_TYPE_YV24:
+        b->video_info.plane_count = 3;
+        break;
+    default:
+        b->video_info.plane_count = 1;
+        break;
+    }
+
+    qcap2_rcbuffer_create_info_t create_info = {
+        sizeof(create_info),
+        b,
+        NULL,
+        system_video_frame_destroy,
+        QCAP2_RCBUFFER_CONTENT_VIDEO_FRAME,
+        QCAP2_RCBUFFER_MEMORY_SYSTEM,
+        QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_VIDEO_PLANES,
+        &system_video_frame_ops
+    };
+
+    qcap2_rcbuffer_t* buf = qcap2_rcbuffer_new(&create_info);
+    if (!buf) {
+        delete b;
+    }
+    return buf;
+}
+
+struct SystemPacketBackend {
+    qcap2_av_packet_t packet;
+    qcap2_rcbuffer_packet_info_t packet_info;
+
+    SystemPacketBackend() {
+        qcap2_av_packet_init(&packet);
+        memset(&packet_info, 0, sizeof(packet_info));
+        packet_info.cb = sizeof(packet_info);
+    }
+    ~SystemPacketBackend() {
+        qcap2_av_packet_free_buffer(&packet);
+    }
+};
+
+static void system_packet_destroy(void* owner, void* user_data) {
+    (void)user_data;
+    delete (SystemPacketBackend*)owner;
+}
+
+static QRESULT system_packet_query(void* owner, void* user_data, qcap2_rcbuffer_info_t* info) {
+    (void)user_data;
+    info->content_type = QCAP2_RCBUFFER_CONTENT_PACKET;
+    info->memory_flags = QCAP2_RCBUFFER_MEMORY_SYSTEM;
+    info->capability_flags = QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_PACKET_BYTES;
+    info->owner = owner;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT system_packet_get_packet_info(void* owner, void* user_data, qcap2_rcbuffer_packet_info_t* info) {
+    (void)user_data;
+    SystemPacketBackend* b = (SystemPacketBackend*)owner;
+    *info = b->packet_info;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT system_packet_set_packet_info(void* owner, void* user_data, const qcap2_rcbuffer_packet_info_t* info) {
+    (void)user_data;
+    SystemPacketBackend* b = (SystemPacketBackend*)owner;
+    b->packet_info = *info;
+    qcap2_av_packet_set_property(&b->packet, info->stream_index, info->is_keyframe);
+    qcap2_av_packet_set_pts(&b->packet, info->pts);
+    qcap2_av_packet_set_dts(&b->packet, info->dts);
+    qcap2_av_packet_set_sample_time(&b->packet, info->sample_time);
+    if (info->data && info->size > 0) {
+        qcap2_av_packet_set_buffer(&b->packet, info->data, info->size);
+    }
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static const qcap2_rcbuffer_ops_t system_packet_ops = {
+    sizeof(qcap2_rcbuffer_ops_t),
+    NULL, // begin_access
+    NULL, // end_access
+    system_packet_query,
+    NULL, // get_video_info
+    NULL, // set_video_info
+    NULL, // get_plane
+    system_packet_get_packet_info,
+    system_packet_set_packet_info,
+    NULL, // get_handle
+    NULL, // get_audio_info
+    NULL  // set_audio_info
+};
+
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_system_packet(size_t capacity) {
+    SystemPacketBackend* b = new (std::nothrow) SystemPacketBackend();
+    if (!b) return NULL;
+
+    if (capacity > 0) {
+        if (!qcap2_av_packet_alloc_buffer(&b->packet, (int)capacity)) {
+            delete b;
+            return NULL;
+        }
+        uint8_t* buf_ptr = NULL;
+        int buf_size = 0;
+        qcap2_av_packet_get_buffer(&b->packet, &buf_ptr, &buf_size);
+        b->packet_info.data = buf_ptr;
+        b->packet_info.size = buf_size;
+    }
+
+    qcap2_rcbuffer_create_info_t create_info = {
+        sizeof(create_info),
+        b,
+        NULL,
+        system_packet_destroy,
+        QCAP2_RCBUFFER_CONTENT_PACKET,
+        QCAP2_RCBUFFER_MEMORY_SYSTEM,
+        QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_PACKET_BYTES,
+        &system_packet_ops
+    };
+
+    qcap2_rcbuffer_t* buf = qcap2_rcbuffer_new(&create_info);
+    if (!buf) {
+        delete b;
+    }
+    return buf;
+}
+
+struct DmaBufVideoFrameBackend {
+    qcap2_av_frame_t frame;
+    qcap2_rcbuffer_video_info_t video_info;
+    int prot;
+
+    DmaBufVideoFrameBackend() {
+        qcap2_av_frame_init(&frame);
+        memset(&video_info, 0, sizeof(video_info));
+        video_info.cb = sizeof(video_info);
+        prot = PROT_READ | PROT_WRITE;
+    }
+    ~DmaBufVideoFrameBackend() {
+        qcap2_av_frame_free_buffer(&frame);
+    }
+};
+
+static void dmabuf_video_frame_destroy(void* owner, void* user_data) {
+    (void)user_data;
+    delete (DmaBufVideoFrameBackend*)owner;
+}
+
+static QRESULT dmabuf_video_frame_begin_access(void* owner, void* user_data, uint32_t flags, qcap2_rcbuffer_access_t* access) {
+    (void)user_data;
+    DmaBufVideoFrameBackend* b = (DmaBufVideoFrameBackend*)owner;
+    
+    if (flags & QCAP2_RCBUFFER_ACCESS_CPU) {
+        QRESULT res = qcap2_av_frame_map_dmabuf(&b->frame, b->prot);
+        if (res != QCAP_RS_SUCCESSFUL) return res;
+        
+        qcap2_dmabuf_t* dmabuf = NULL;
+        if (qcap2_av_frame_get_dmabuf(&b->frame, &dmabuf) == QCAP_RS_SUCCESSFUL && dmabuf) {
+            qcap2_av_frame_set_buffer(&b->frame, (uint8_t*)dmabuf->pVirAddr, (int)b->video_info.width);
+        }
+    }
+    
+    access->granted_flags = flags & (QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU | QCAP2_RCBUFFER_ACCESS_DEVICE | QCAP2_RCBUFFER_ACCESS_ZERO_COPY);
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static void dmabuf_video_frame_end_access(void* owner, void* user_data, qcap2_rcbuffer_access_t* access) {
+    (void)user_data;
+    DmaBufVideoFrameBackend* b = (DmaBufVideoFrameBackend*)owner;
+    if (access->requested_flags & QCAP2_RCBUFFER_ACCESS_CPU) {
+        qcap2_av_frame_unmap_dmabuf(&b->frame);
+        qcap2_av_frame_set_buffer(&b->frame, NULL, 0);
+    }
+}
+
+static QRESULT dmabuf_video_frame_query(void* owner, void* user_data, qcap2_rcbuffer_info_t* info) {
+    (void)user_data;
+    info->content_type = QCAP2_RCBUFFER_CONTENT_VIDEO_FRAME;
+    info->memory_flags = QCAP2_RCBUFFER_MEMORY_DMABUF;
+    info->capability_flags = QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_VIDEO_PLANES | QCAP2_RCBUFFER_CAP_NATIVE_HANDLE | QCAP2_RCBUFFER_CAP_ZERO_COPY;
+    info->owner = owner;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT dmabuf_video_frame_get_video_info(void* owner, void* user_data, qcap2_rcbuffer_video_info_t* info) {
+    (void)user_data;
+    DmaBufVideoFrameBackend* b = (DmaBufVideoFrameBackend*)owner;
+    *info = b->video_info;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT dmabuf_video_frame_set_video_info(void* owner, void* user_data, const qcap2_rcbuffer_video_info_t* info) {
+    (void)user_data;
+    DmaBufVideoFrameBackend* b = (DmaBufVideoFrameBackend*)owner;
+    b->video_info = *info;
+    qcap2_av_frame_set_video_property(&b->frame, info->color_space_type, info->width, info->height);
+    qcap2_av_frame_set_field_type(&b->frame, info->field_type);
+    qcap2_av_frame_set_pts(&b->frame, info->pts);
+    qcap2_av_frame_set_sample_time(&b->frame, info->sample_time);
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT dmabuf_video_frame_get_plane(void* owner, void* user_data, int plane, qcap2_rcbuffer_plane_t* out) {
+    (void)user_data;
+    DmaBufVideoFrameBackend* b = (DmaBufVideoFrameBackend*)owner;
+    
+    if (plane < 0 || plane >= b->video_info.plane_count) {
+        return QCAP_RS_ERROR_INVALID_PARAMETER;
+    }
+
+    uint8_t* buffers[4] = {0};
+    int strides[4] = {0};
+    qcap2_av_frame_get_buffer1(&b->frame, buffers, strides);
+
+    qcap2_dmabuf_t* dmabuf = NULL;
+    if (qcap2_av_frame_get_dmabuf(&b->frame, &dmabuf) != QCAP_RS_SUCCESSFUL || !dmabuf) {
+        return QCAP_RS_ERROR_GENERAL;
+    }
+
+    out->data = buffers[plane];
+    out->stride = strides[plane] > 0 ? strides[plane] : (int)b->video_info.width;
+    out->size = dmabuf->dmabuf_size;
+    out->fd = dmabuf->fd;
+    out->offset = 0;
+    out->native_handle = (void*)(uintptr_t)dmabuf->fd;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT dmabuf_video_frame_get_handle(void* owner, void* user_data, qcap2_rcbuffer_handle_type_t type, qcap2_rcbuffer_handle_t* out) {
+    (void)user_data;
+    DmaBufVideoFrameBackend* b = (DmaBufVideoFrameBackend*)owner;
+    
+    qcap2_dmabuf_t* dmabuf = NULL;
+    if (qcap2_av_frame_get_dmabuf(&b->frame, &dmabuf) != QCAP_RS_SUCCESSFUL || !dmabuf) {
+        return QCAP_RS_ERROR_GENERAL;
+    }
+
+    if (type == QCAP2_RCBUFFER_HANDLE_DMABUF_FD) {
+        out->type = QCAP2_RCBUFFER_HANDLE_DMABUF_FD;
+        out->u.fd = dmabuf->fd;
+        out->size = dmabuf->dmabuf_size;
+        return QCAP_RS_SUCCESSFUL;
+    }
+    return QCAP_RS_ERROR_NON_SUPPORT;
+}
+
+static const qcap2_rcbuffer_ops_t dmabuf_video_frame_ops = {
+    sizeof(qcap2_rcbuffer_ops_t),
+    dmabuf_video_frame_begin_access,
+    dmabuf_video_frame_end_access,
+    dmabuf_video_frame_query,
+    dmabuf_video_frame_get_video_info,
+    dmabuf_video_frame_set_video_info,
+    dmabuf_video_frame_get_plane,
+    NULL, // get_packet_info
+    NULL, // set_packet_info
+    dmabuf_video_frame_get_handle,
+    NULL, // get_audio_info
+    NULL  // set_audio_info
+};
+
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_dmabuf_video_frame(const qcap2_dmabuf_frame_create_info_t* info) {
+    if (!info || info->cb < sizeof(qcap2_dmabuf_frame_create_info_t)) return NULL;
+
+    DmaBufVideoFrameBackend* b = new (std::nothrow) DmaBufVideoFrameBackend();
+    if (!b) return NULL;
+
+    b->prot = info->prot;
+    qcap2_av_frame_set_video_property(&b->frame, info->color_space_type, info->width, info->height);
+    
+    int size = (int)(info->width * info->height * 4);
+    if (qcap2_av_frame_alloc_dmabuf(&b->frame, size, info->prot) != QCAP_RS_SUCCESSFUL) {
+        delete b;
+        return NULL;
+    }
+
+    b->video_info.color_space_type = info->color_space_type;
+    b->video_info.width = info->width;
+    b->video_info.height = info->height;
+    b->video_info.field_type = QCAP2_FIELD_NONE;
+    b->video_info.pts = 0;
+    b->video_info.sample_time = 0.0;
+    b->video_info.plane_count = 1;
+
+    qcap2_rcbuffer_create_info_t create_info = {
+        sizeof(create_info),
+        b,
+        NULL,
+        dmabuf_video_frame_destroy,
+        QCAP2_RCBUFFER_CONTENT_VIDEO_FRAME,
+        QCAP2_RCBUFFER_MEMORY_DMABUF,
+        QCAP2_RCBUFFER_CAP_CPU_READ | QCAP2_RCBUFFER_CAP_CPU_WRITE | QCAP2_RCBUFFER_CAP_VIDEO_PLANES | QCAP2_RCBUFFER_CAP_NATIVE_HANDLE | QCAP2_RCBUFFER_CAP_ZERO_COPY,
+        &dmabuf_video_frame_ops
+    };
+
+    qcap2_rcbuffer_t* buf = qcap2_rcbuffer_new(&create_info);
+    if (!buf) {
+        delete b;
+    }
+    return buf;
+}
+
+struct CudaVideoFrameBackend {
+    qcap2_rcbuffer_video_info_t video_info;
+    uintptr_t fake_cuda_ptr;
+
+    CudaVideoFrameBackend() {
+        memset(&video_info, 0, sizeof(video_info));
+        video_info.cb = sizeof(video_info);
+        fake_cuda_ptr = 0xDEADE000;
+    }
+};
+
+static void cuda_video_frame_destroy(void* owner, void* user_data) {
+    (void)user_data;
+    delete (CudaVideoFrameBackend*)owner;
+}
+
+static QRESULT cuda_video_frame_query(void* owner, void* user_data, qcap2_rcbuffer_info_t* info) {
+    (void)user_data;
+    info->content_type = QCAP2_RCBUFFER_CONTENT_VIDEO_FRAME;
+    info->memory_flags = QCAP2_RCBUFFER_MEMORY_CUDA_DEVICE;
+    info->capability_flags = QCAP2_RCBUFFER_CAP_VIDEO_PLANES | QCAP2_RCBUFFER_CAP_NATIVE_HANDLE | QCAP2_RCBUFFER_CAP_ZERO_COPY;
+    info->owner = owner;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT cuda_video_frame_get_video_info(void* owner, void* user_data, qcap2_rcbuffer_video_info_t* info) {
+    (void)user_data;
+    CudaVideoFrameBackend* b = (CudaVideoFrameBackend*)owner;
+    *info = b->video_info;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT cuda_video_frame_set_video_info(void* owner, void* user_data, const qcap2_rcbuffer_video_info_t* info) {
+    (void)user_data;
+    CudaVideoFrameBackend* b = (CudaVideoFrameBackend*)owner;
+    b->video_info = *info;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT cuda_video_frame_get_plane(void* owner, void* user_data, int plane, qcap2_rcbuffer_plane_t* out) {
+    (void)user_data;
+    CudaVideoFrameBackend* b = (CudaVideoFrameBackend*)owner;
+    if (plane < 0 || plane >= b->video_info.plane_count) {
+        return QCAP_RS_ERROR_INVALID_PARAMETER;
+    }
+    out->data = NULL;
+    out->stride = (int)b->video_info.width * 4;
+    out->size = out->stride * b->video_info.height;
+    out->fd = -1;
+    out->offset = 0;
+    out->native_handle = (void*)b->fake_cuda_ptr;
+    return QCAP_RS_SUCCESSFUL;
+}
+
+static QRESULT cuda_video_frame_get_handle(void* owner, void* user_data, qcap2_rcbuffer_handle_type_t type, qcap2_rcbuffer_handle_t* out) {
+    (void)user_data;
+    CudaVideoFrameBackend* b = (CudaVideoFrameBackend*)owner;
+    if (type == QCAP2_RCBUFFER_HANDLE_CUDA_DEVICE_PTR) {
+        out->type = QCAP2_RCBUFFER_HANDLE_CUDA_DEVICE_PTR;
+        out->u.value = b->fake_cuda_ptr;
+        out->size = b->video_info.width * b->video_info.height * 4;
+        return QCAP_RS_SUCCESSFUL;
+    }
+    return QCAP_RS_ERROR_NON_SUPPORT;
+}
+
+static const qcap2_rcbuffer_ops_t cuda_video_frame_ops = {
+    sizeof(qcap2_rcbuffer_ops_t),
+    NULL, // begin_access
+    NULL, // end_access
+    cuda_video_frame_query,
+    cuda_video_frame_get_video_info,
+    cuda_video_frame_set_video_info,
+    cuda_video_frame_get_plane,
+    NULL, // get_packet_info
+    NULL, // set_packet_info
+    cuda_video_frame_get_handle,
+    NULL, // get_audio_info
+    NULL  // set_audio_info
+};
+
+qcap2_rcbuffer_t* qcap2_rcbuffer_new_cuda_video_frame(const qcap2_cuda_frame_create_info_t* info) {
+    if (!info || info->cb < sizeof(qcap2_cuda_frame_create_info_t)) return NULL;
+
+    CudaVideoFrameBackend* b = new (std::nothrow) CudaVideoFrameBackend();
+    if (!b) return NULL;
+
+    b->video_info.color_space_type = info->color_space_type;
+    b->video_info.width = info->width;
+    b->video_info.height = info->height;
+    b->video_info.field_type = QCAP2_FIELD_NONE;
+    b->video_info.pts = 0;
+    b->video_info.sample_time = 0.0;
+    b->video_info.plane_count = 1;
+
+    qcap2_rcbuffer_create_info_t create_info = {
+        sizeof(create_info),
+        b,
+        NULL,
+        cuda_video_frame_destroy,
+        QCAP2_RCBUFFER_CONTENT_VIDEO_FRAME,
+        QCAP2_RCBUFFER_MEMORY_CUDA_DEVICE,
+        QCAP2_RCBUFFER_CAP_VIDEO_PLANES | QCAP2_RCBUFFER_CAP_NATIVE_HANDLE | QCAP2_RCBUFFER_CAP_ZERO_COPY,
+        &cuda_video_frame_ops
+    };
+
+    qcap2_rcbuffer_t* buf = qcap2_rcbuffer_new(&create_info);
+    if (!buf) {
+        delete b;
+    }
+    return buf;
 }
 
 #ifdef __cplusplus

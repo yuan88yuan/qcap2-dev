@@ -56,8 +56,8 @@ int main() {
     qcap2_av_frame_set_video_property(frame, QCAP_COLORSPACE_TYPE_RGB24, 1280, 720);
     qcap2_av_frame_set_buffer(frame, dummy_pixels, image_stride);
 
-    qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new(frame, [](PVOID pData) {
-        qcap2_av_frame_t* f = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_from_av_frame(frame, frame, [](void* owner, void* user_data) {
+        qcap2_av_frame_t* f = (qcap2_av_frame_t*)owner;
         if (f) {
             delete f;
         }
@@ -72,18 +72,20 @@ int main() {
     ret = qcap2_video_sink_pop(sink, &popped_rcbuf);
     assert(ret == QCAP_RS_SUCCESSFUL && popped_rcbuf != nullptr);
 
-    PVOID pData = qcap2_rcbuffer_lock_data(popped_rcbuf);
-    assert(pData != nullptr);
-    qcap2_av_frame_t* popped_frame = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_access_t access = { sizeof(access) };
+    QRESULT r = qcap2_rcbuffer_begin_access(popped_rcbuf, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access);
+    assert(r == QCAP_RS_SUCCESSFUL);
 
-    ULONG cs = 0, w = 0, h = 0;
-    qcap2_av_frame_get_video_property(popped_frame, &cs, &w, &h);
-    std::cout << "Popped frame properties: colorspace=" << cs << ", width=" << w << ", height=" << h << "\n";
-    assert(cs == QCAP_COLORSPACE_TYPE_RGB24);
-    assert(w == 1280);
-    assert(h == 720);
+    qcap2_rcbuffer_video_info_t video_info = { sizeof(video_info) };
+    r = qcap2_rcbuffer_get_video_info(popped_rcbuf, &video_info);
+    assert(r == QCAP_RS_SUCCESSFUL);
 
-    qcap2_rcbuffer_unlock_data(popped_rcbuf);
+    std::cout << "Popped frame properties: colorspace=" << video_info.color_space_type << ", width=" << video_info.width << ", height=" << video_info.height << "\n";
+    assert(video_info.color_space_type == QCAP_COLORSPACE_TYPE_RGB24);
+    assert(video_info.width == 1280);
+    assert(video_info.height == 720);
+
+    qcap2_rcbuffer_end_access(popped_rcbuf, &access);
     qcap2_rcbuffer_release(popped_rcbuf);
     qcap2_rcbuffer_release(rcbuf);
     delete[] dummy_pixels;
@@ -157,8 +159,8 @@ int main() {
     std::memset(nv12_pixels, 0x55, nv12_size);
     qcap2_av_frame_set_buffer(drm_frame, nv12_pixels, nv12_stride);
 
-    qcap2_rcbuffer_t* drm_rcbuf = qcap2_rcbuffer_new(drm_frame, [](PVOID pData) {
-        qcap2_av_frame_t* f = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_t* drm_rcbuf = qcap2_rcbuffer_new_from_av_frame(drm_frame, drm_frame, [](void* owner, void* user_data) {
+        qcap2_av_frame_t* f = (qcap2_av_frame_t*)owner;
         if (f) {
             delete f;
         }

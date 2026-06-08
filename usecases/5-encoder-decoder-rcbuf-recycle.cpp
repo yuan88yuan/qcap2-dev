@@ -62,21 +62,24 @@ static void encoder_thread_func(
 			}
 		}
 
-		// --- Fill the frame with pixel data ---
-		PVOID pData = qcap2_rcbuffer_lock_data(pInputRCBuffer);
-		{
-			qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)pData;
+		qcap2_rcbuffer_access_t access = { sizeof(access) };
+		if (qcap2_rcbuffer_begin_access(pInputRCBuffer, QCAP2_RCBUFFER_ACCESS_WRITE | QCAP2_RCBUFFER_ACCESS_CPU, &access) == QCAP_RS_SUCCESSFUL) {
+			qcap2_rcbuffer_info_t info = { sizeof(info) };
+			if (qcap2_rcbuffer_query(pInputRCBuffer, &info) == QCAP_RS_SUCCESSFUL) {
+				qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)info.owner;
+				if (pAVFrame) {
+					uint8_t* pBuffer[4];
+					int      pStride[4];
+					qcap2_av_frame_get_buffer1(pAVFrame, pBuffer, pStride);
 
-			uint8_t* pBuffer[4];
-			int      pStride[4];
-			qcap2_av_frame_get_buffer1(pAVFrame, pBuffer, pStride);
+					// ... fill pBuffer[0], pBuffer[1], pBuffer[2] with Y/U/V data ...
+					// (e.g. from camera capture, test pattern generator, etc.)
 
-			// ... fill pBuffer[0], pBuffer[1], pBuffer[2] with Y/U/V data ...
-			// (e.g. from camera capture, test pattern generator, etc.)
-
-			qcap2_av_frame_set_pts(pAVFrame, (int64_t)i);
+					qcap2_av_frame_set_pts(pAVFrame, (int64_t)i);
+				}
+			}
+			qcap2_rcbuffer_end_access(pInputRCBuffer, &access);
 		}
-		qcap2_rcbuffer_unlock_data(pInputRCBuffer);
 
 		// =============================================================
 		// STEP 2: Push the raw frame into the encoder
@@ -116,31 +119,24 @@ static void encoder_thread_func(
 		}
 
 		// --- Read the encoded packet data ---
-		PVOID pPktData = qcap2_rcbuffer_lock_data(pOutputRCBuffer);
-		{
-			qcap2_av_packet_t* pAVPacket = (qcap2_av_packet_t*)pPktData;
-
-			uint8_t* pPktBuffer = NULL;
-			int      nPktSize   = 0;
-			qcap2_av_packet_get_buffer(pAVPacket, &pPktBuffer, &nPktSize);
-
-			BOOL bIsKeyFrame = FALSE;
-			int  nStreamIdx  = 0;
-			qcap2_av_packet_get_property(pAVPacket, &nStreamIdx, &bIsKeyFrame);
-
-			LOGI("Encoded frame %d: size=%d, keyframe=%d", i, nPktSize, bIsKeyFrame);
-
-			// --- Forward the encoded packet to the decoder ---
-			qcap2_video_decoder_push(pDecoder, pOutputRCBuffer);
-
-			// Reclaim the packet buffer from decoder input recycled queue (HPR)
-			qcap2_rcbuffer_t* pRecycledPacket = NULL;
-			qcap2_video_decoder_pop_input(pDecoder, &pRecycledPacket);
-			if (pRecycledPacket != NULL) {
-				qcap2_rcbuffer_release(pRecycledPacket);
+		qcap2_rcbuffer_access_t access_pkt = { sizeof(access_pkt) };
+		if (qcap2_rcbuffer_begin_access(pOutputRCBuffer, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access_pkt) == QCAP_RS_SUCCESSFUL) {
+			qcap2_rcbuffer_packet_info_t pkt_info = { sizeof(pkt_info) };
+			if (qcap2_rcbuffer_get_packet_info(pOutputRCBuffer, &pkt_info) == QCAP_RS_SUCCESSFUL) {
+				LOGI("Encoded frame %d: size=%d, keyframe=%d", i, pkt_info.size, pkt_info.is_keyframe);
 			}
+			qcap2_rcbuffer_end_access(pOutputRCBuffer, &access_pkt);
 		}
-		qcap2_rcbuffer_unlock_data(pOutputRCBuffer);
+
+		// --- Forward the encoded packet to the decoder ---
+		qcap2_video_decoder_push(pDecoder, pOutputRCBuffer);
+
+		// Reclaim the packet buffer from decoder input recycled queue (HPR)
+		qcap2_rcbuffer_t* pRecycledPacket = NULL;
+		qcap2_video_decoder_pop_input(pDecoder, &pRecycledPacket);
+		if (pRecycledPacket != NULL) {
+			qcap2_rcbuffer_release(pRecycledPacket);
+		}
 
 		// =============================================================
 		// STEP 5 (PPR): Return the empty packet buffer to the encoder
@@ -189,22 +185,19 @@ static void decoder_thread_func(
 		}
 
 		// --- Consume the decoded frame data ---
-		PVOID pData = qcap2_rcbuffer_lock_data(pOutputRCBuffer);
-		{
-			qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)pData;
+		qcap2_rcbuffer_access_t access_frame = { sizeof(access_frame) };
+		if (qcap2_rcbuffer_begin_access(pOutputRCBuffer, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access_frame) == QCAP_RS_SUCCESSFUL) {
+			qcap2_rcbuffer_video_info_t video_info = { sizeof(video_info) };
+			qcap2_rcbuffer_get_video_info(pOutputRCBuffer, &video_info);
 
-			uint8_t* pBuffer[4];
-			int      pStride[4];
-			qcap2_av_frame_get_buffer1(pAVFrame, pBuffer, pStride);
+			qcap2_rcbuffer_plane_t plane0 = { sizeof(plane0) };
+			qcap2_rcbuffer_get_plane(pOutputRCBuffer, 0, &plane0);
 
-			int64_t nPTS = 0;
-			qcap2_av_frame_get_pts(pAVFrame, &nPTS);
-
-			LOGI("Decoded frame PTS=%lld: Y=%p, stride=%d", nPTS, pBuffer[0], pStride[0]);
+			LOGI("Decoded frame PTS=%lld: Y=%p, stride=%d", video_info.pts, plane0.data, plane0.stride);
 
 			// ... render, display, save, or further process the frame ...
+			qcap2_rcbuffer_end_access(pOutputRCBuffer, &access_frame);
 		}
-		qcap2_rcbuffer_unlock_data(pOutputRCBuffer);
 
 		// =============================================================
 		// STEP 2 (PPR): Return the empty frame buffer to the decoder

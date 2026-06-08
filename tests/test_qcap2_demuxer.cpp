@@ -86,30 +86,19 @@ int main() {
         qcap2_rcbuffer_t* pkt_buf = nullptr;
         QRESULT pop_res = qcap2_video_encoder_pop(venc, &pkt_buf);
         if (pop_res == QCAP_RS_SUCCESSFUL && pkt_buf) {
-            void* data = qcap2_rcbuffer_lock_data(pkt_buf);
-            if (data) {
-                qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)data;
-                uint8_t* buf = nullptr;
-                int size = 0;
-                int64_t pts = 0, dts = 0;
-                double sample_time = 0.0;
-                int stream_idx = 0;
-                BOOL is_key = FALSE;
+            qcap2_rcbuffer_access_t access = { sizeof(access) };
+            if (qcap2_rcbuffer_begin_access(pkt_buf, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access) == QCAP_RS_SUCCESSFUL) {
+                qcap2_rcbuffer_packet_info_t pkt_info = { sizeof(pkt_info) };
+                if (qcap2_rcbuffer_get_packet_info(pkt_buf, &pkt_info) == QCAP_RS_SUCCESSFUL) {
+                    std::cout << "Popped packet " << popped_packets << " -> size: " << pkt_info.size 
+                              << " | PTS: " << pkt_info.pts << " | DTS: " << pkt_info.dts 
+                              << " | sample_time: " << pkt_info.sample_time 
+                              << " | keyframe: " << (pkt_info.is_keyframe ? "YES" : "NO") << "\n";
 
-                qcap2_av_packet_get_buffer(pkt, &buf, &size);
-                qcap2_av_packet_get_pts(pkt, &pts);
-                qcap2_av_packet_get_dts(pkt, &dts);
-                qcap2_av_packet_get_sample_time(pkt, &sample_time);
-                qcap2_av_packet_get_property(pkt, &stream_idx, &is_key);
-
-                std::cout << "Popped packet " << popped_packets << " -> size: " << size 
-                          << " | PTS: " << pts << " | DTS: " << dts 
-                          << " | sample_time: " << sample_time 
-                          << " | keyframe: " << (is_key ? "YES" : "NO") << "\n";
-
-                assert(size > 0);
-                assert(buf != nullptr);
-                qcap2_rcbuffer_unlock_data(pkt_buf);
+                    assert(pkt_info.size > 0);
+                    assert(pkt_info.data != nullptr);
+                }
+                qcap2_rcbuffer_end_access(pkt_buf, &access);
             }
             qcap2_rcbuffer_release(pkt_buf);
             popped_packets++;

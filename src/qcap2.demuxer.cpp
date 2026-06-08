@@ -239,8 +239,9 @@ static void demuxer_read_thread(qcap2_demuxer_priv_t* priv) {
             qcap2_av_packet_set_property(av_pkt, pkt->stream_index, (pkt->flags & AV_PKT_FLAG_KEY) ? TRUE : FALSE);
             qcap2_av_packet_set_sample_time(av_pkt, pkt->pts * av_q2d(priv->format_context->streams[pkt->stream_index]->time_base));
             
-            enc_rcbuf = qcap2_rcbuffer_new(av_pkt, [](PVOID pData) {
-                qcap2_av_packet_t* p = (qcap2_av_packet_t*)pData;
+            enc_rcbuf = qcap2_rcbuffer_new_from_av_packet(av_pkt, av_pkt, [](void* owner, void* user_data) {
+                (void)owner;
+                qcap2_av_packet_t* p = (qcap2_av_packet_t*)user_data;
                 if (p) {
                     qcap2_av_packet_free_buffer(p);
                     delete p;
@@ -703,8 +704,9 @@ static void demuxer_rtsp_read_thread(qcap2_demuxer_priv_t* priv) {
             qcap2_av_packet_set_property(av_pkt, pkt->stream_index, (pkt->flags & AV_PKT_FLAG_KEY) ? TRUE : FALSE);
             qcap2_av_packet_set_sample_time(av_pkt, pkt->pts * av_q2d(priv->format_context->streams[pkt->stream_index]->time_base));
             
-            enc_rcbuf = qcap2_rcbuffer_new(av_pkt, [](PVOID pData) {
-                qcap2_av_packet_t* p = (qcap2_av_packet_t*)pData;
+            enc_rcbuf = qcap2_rcbuffer_new_from_av_packet(av_pkt, av_pkt, [](void* owner, void* user_data) {
+                (void)owner;
+                qcap2_av_packet_t* p = (qcap2_av_packet_t*)user_data;
                 if (p) {
                     qcap2_av_packet_free_buffer(p);
                     delete p;
@@ -1245,8 +1247,9 @@ static void demuxer_mock_read_thread(qcap2_demuxer_priv_t* priv) {
                 qcap2_av_packet_set_sample_time(v_pkt, priv->mock->frame_count * 0.04);
                 qcap2_av_packet_set_property(v_pkt, 0, TRUE); // keyframe
             }
-            qcap2_rcbuffer_t* enc_rcbuf = qcap2_rcbuffer_new(v_pkt, [](PVOID pData) {
-                qcap2_av_packet_t* p = (qcap2_av_packet_t*)pData;
+            qcap2_rcbuffer_t* enc_rcbuf = qcap2_rcbuffer_new_from_av_packet(v_pkt, v_pkt, [](void* owner, void* user_data) {
+                (void)owner;
+                qcap2_av_packet_t* p = (qcap2_av_packet_t*)user_data;
                 if (p) {
                     qcap2_av_packet_free_buffer(p);
                     delete p;
@@ -1283,8 +1286,9 @@ static void demuxer_mock_read_thread(qcap2_demuxer_priv_t* priv) {
                 qcap2_av_packet_set_sample_time(a_pkt, priv->mock->frame_count * (1024.0 / 44100.0));
                 qcap2_av_packet_set_property(a_pkt, 1, TRUE);
             }
-            qcap2_rcbuffer_t* enc_rcbuf = qcap2_rcbuffer_new(a_pkt, [](PVOID pData) {
-                qcap2_av_packet_t* p = (qcap2_av_packet_t*)pData;
+            qcap2_rcbuffer_t* enc_rcbuf = qcap2_rcbuffer_new_from_av_packet(a_pkt, a_pkt, [](void* owner, void* user_data) {
+                (void)owner;
+                qcap2_av_packet_t* p = (qcap2_av_packet_t*)user_data;
                 if (p) {
                     qcap2_av_packet_free_buffer(p);
                     delete p;

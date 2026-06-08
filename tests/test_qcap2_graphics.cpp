@@ -6,8 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-void on_free_rcbuf(PVOID pData) {
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
+void on_free_rcbuf(void* owner, void* user_data) {
+    (void)user_data;
+    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)owner;
     qcap2_av_frame_free_buffer(pFrame);
     free(pFrame);
 }
@@ -28,7 +29,7 @@ int main() {
     qcap2_av_frame_get_buffer1(pFrame, pBufs, pStrides);
     memset(pBufs[0], 0, pStrides[0] * 480);
 
-    qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new(pFrame, on_free_rcbuf);
+    qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new_from_av_frame(pFrame, NULL, on_free_rcbuf);
 
     // 2. Setup font atlas
     qcap2_font_atlas_t* pFontAtlas = qcap2_font_atlas_new();

@@ -13,6 +13,76 @@
 #include <unistd.h>
 #endif
 
+#include <unordered_map>
+#include <mutex>
+#include <cstddef>
+
+static std::unordered_map<void*, void (*)(PVOID)> g_test_destroy_map;
+static std::mutex g_test_destroy_mutex;
+
+static inline qcap2_av_frame_t* test_get_frame(qcap2_rcbuffer_t* buf) {
+    if (!buf) return nullptr;
+    qcap2_rcbuffer_info_t info = { sizeof(info) };
+    if (qcap2_rcbuffer_query(buf, &info) != QCAP_RS_SUCCESSFUL) {
+        return nullptr;
+    }
+    return (qcap2_av_frame_t*)info.owner;
+}
+
+static inline qcap2_rcbuffer_t* test_rcbuffer_new_from_frame(qcap2_av_frame_t* frame, void (*destroy)(PVOID)) {
+    if (!frame) {
+        frame = new qcap2_av_frame_t;
+        qcap2_av_frame_init(frame);
+        {
+            std::lock_guard<std::mutex> lock(g_test_destroy_mutex);
+            g_test_destroy_map[frame] = destroy;
+        }
+        return qcap2_rcbuffer_new_from_av_frame(frame, frame, [](void* owner, void* user_data) {
+            (void)user_data;
+            qcap2_av_frame_t* f = (qcap2_av_frame_t*)owner;
+            void (*d)(PVOID) = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(g_test_destroy_mutex);
+                auto it = g_test_destroy_map.find(f);
+                if (it != g_test_destroy_map.end()) {
+                    d = it->second;
+                    g_test_destroy_map.erase(it);
+                }
+            }
+            if (d) d(nullptr);
+            delete f;
+        });
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_test_destroy_mutex);
+        g_test_destroy_map[frame] = destroy;
+    }
+    return qcap2_rcbuffer_new_from_av_frame(frame, frame, [](void* owner, void* user_data) {
+        (void)user_data;
+        qcap2_av_frame_t* f = (qcap2_av_frame_t*)owner;
+        void (*d)(PVOID) = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_test_destroy_mutex);
+            auto it = g_test_destroy_map.find(f);
+            if (it != g_test_destroy_map.end()) {
+                d = it->second;
+                g_test_destroy_map.erase(it);
+            }
+        }
+        if (d) d(f);
+    });
+}
+
+static inline qcap2_rcbuffer_t* test_rcbuffer_new_dummy() {
+    qcap2_av_frame_t* frame = new qcap2_av_frame_t;
+    qcap2_av_frame_init(frame);
+    return qcap2_rcbuffer_new_from_av_frame(frame, frame, [](void* owner, void* user_data) {
+        (void)user_data;
+        qcap2_av_frame_t* f = (qcap2_av_frame_t*)owner;
+        delete f;
+    });
+}
+
 void test_qcap2_benaphore_lock_t() {
     qcap2_benaphore_lock_t* lock = qcap2_benaphore_lock_new();
     assert(lock != NULL);
@@ -258,7 +328,7 @@ void test_qcap2_rcbuffer_queue_t() {
     qcap2_rcbuffer_queue_set_max_buffers(queue, 5);
     assert(qcap2_rcbuffer_queue_start(queue) == QCAP_RS_SUCCESSFUL);
 
-    qcap2_rcbuffer_t* buf = qcap2_rcbuffer_new(NULL, NULL);
+    qcap2_rcbuffer_t* buf = test_rcbuffer_new_dummy();
     assert(buf != NULL);
 
     std::thread t1([&]() {
@@ -288,11 +358,6 @@ struct TestQueueVideoFrame {
     TestQueueVideoFrame() : index(0), prepared_value(-1), consumed_count(0), free_count(0) {
         qcap2_av_frame_init(&frame);
     }
-
-    static void on_free_resource(PVOID pData) {
-        TestQueueVideoFrame* pThis = qcap2_container_of(pData, TestQueueVideoFrame, frame);
-        pThis->free_count++;
-    }
 };
 
 void test_qcap2_rcbuffer_queue_provider_consumer_scheme_t() {
@@ -312,9 +377,15 @@ void test_qcap2_rcbuffer_queue_provider_consumer_scheme_t() {
     qcap2_rcbuffer_t* rcbufs[kBufferCount + 1];
     for (int i = 0; i < kBufferCount; ++i) {
         frames[i].index = i;
-        rcbufs[i] = qcap2_rcbuffer_new(&frames[i].frame, TestQueueVideoFrame::on_free_resource);
+        rcbufs[i] = qcap2_rcbuffer_new_from_av_frame(&frames[i].frame, &frames[i], [](void* owner, void* user_data) {
+            (void)user_data;
+            TestQueueVideoFrame* pThis = (TestQueueVideoFrame*)owner;
+            pThis->free_count++;
+        });
         assert(rcbufs[i] != NULL);
-        assert(qcap2_rcbuffer_get_data(rcbufs[i]) == &frames[i].frame);
+        qcap2_rcbuffer_info_t info = { sizeof(info) };
+        assert(qcap2_rcbuffer_query(rcbufs[i], &info) == QCAP_RS_SUCCESSFUL);
+        assert(info.owner == &frames[i]);
     }
     rcbufs[kBufferCount] = NULL;
 
@@ -337,8 +408,10 @@ void test_qcap2_rcbuffer_queue_provider_consumer_scheme_t() {
             assert(qcap2_rcbuffer_queue_pop(free_queue, &rcbuf) == QCAP_RS_SUCCESSFUL);
             assert(rcbuf != NULL);
 
-            qcap2_av_frame_t* frame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(rcbuf);
-            TestQueueVideoFrame* owner = qcap2_container_of(frame, TestQueueVideoFrame, frame);
+            qcap2_rcbuffer_info_t info = { sizeof(info) };
+            assert(qcap2_rcbuffer_query(rcbuf, &info) == QCAP_RS_SUCCESSFUL);
+            TestQueueVideoFrame* owner = (TestQueueVideoFrame*)info.owner;
+            qcap2_av_frame_t* frame = &owner->frame;
             owner->prepared_value = i;
             qcap2_av_frame_set_pts(frame, i);
 
@@ -355,8 +428,10 @@ void test_qcap2_rcbuffer_queue_provider_consumer_scheme_t() {
             assert(qcap2_rcbuffer_queue_pop(source_queue, &rcbuf) == QCAP_RS_SUCCESSFUL);
             assert(rcbuf != NULL);
 
-            qcap2_av_frame_t* frame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(rcbuf);
-            TestQueueVideoFrame* owner = qcap2_container_of(frame, TestQueueVideoFrame, frame);
+            qcap2_rcbuffer_info_t info = { sizeof(info) };
+            assert(qcap2_rcbuffer_query(rcbuf, &info) == QCAP_RS_SUCCESSFUL);
+            TestQueueVideoFrame* owner = (TestQueueVideoFrame*)info.owner;
+            qcap2_av_frame_t* frame = &owner->frame;
             int64_t pts = -1;
             qcap2_av_frame_get_pts(frame, &pts);
             assert(owner->prepared_value == i);
@@ -401,8 +476,8 @@ void test_qcap2_rcbuffer_queue_event_t() {
     qcap2_rcbuffer_queue_set_event(queue, event);
     assert(qcap2_rcbuffer_queue_start(queue) == QCAP_RS_SUCCESSFUL);
 
-    qcap2_rcbuffer_t* buf1 = qcap2_rcbuffer_new(NULL, NULL);
-    qcap2_rcbuffer_t* buf2 = qcap2_rcbuffer_new(NULL, NULL);
+    qcap2_rcbuffer_t* buf1 = test_rcbuffer_new_dummy();
+    qcap2_rcbuffer_t* buf2 = test_rcbuffer_new_dummy();
     assert(buf1 != NULL && buf2 != NULL);
 
     assert(qcap2_rcbuffer_queue_push(queue, buf1) == QCAP_RS_SUCCESSFUL);
@@ -519,14 +594,22 @@ void test_qcap2_video_source_t() {
     assert(qcap2_video_source_pop(vsrc, &popped) == QCAP_RS_SUCCESSFUL);
     assert(popped != NULL);
 
-    PVOID pData = qcap2_rcbuffer_get_data(popped);
-    assert(pData != NULL);
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
-    uint8_t* pPixels = NULL;
-    int stride = 0;
-    qcap2_av_frame_get_buffer(pFrame, &pPixels, &stride);
-    assert(pPixels != NULL);
-    assert(stride == 1920 * 2);
+    qcap2_rcbuffer_access_t access = { sizeof(access) };
+    QRESULT r = qcap2_rcbuffer_begin_access(popped, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access);
+    assert(r == QCAP_RS_SUCCESSFUL);
+
+    qcap2_rcbuffer_video_info_t video_info = { sizeof(video_info) };
+    r = qcap2_rcbuffer_get_video_info(popped, &video_info);
+    assert(r == QCAP_RS_SUCCESSFUL);
+
+    qcap2_rcbuffer_plane_t plane0 = { sizeof(plane0) };
+    r = qcap2_rcbuffer_get_plane(popped, 0, &plane0);
+    assert(r == QCAP_RS_SUCCESSFUL);
+
+    assert(plane0.data != NULL);
+    assert(plane0.stride == 1920 * 2);
+
+    qcap2_rcbuffer_end_access(popped, &access);
 
     // Push the buffer back to recycle it
     assert(qcap2_video_source_push(vsrc, popped) == QCAP_RS_SUCCESSFUL);
@@ -582,7 +665,7 @@ void test_qcap2_video_source_backends() {
 
     qcap2_av_frame_t custom_frame;
     qcap2_av_frame_init(&custom_frame);
-    qcap2_rcbuffer_t* custom_rcbuf = qcap2_rcbuffer_new(&custom_frame, [](PVOID){});
+    qcap2_rcbuffer_t* custom_rcbuf = test_rcbuffer_new_from_frame(&custom_frame, [](PVOID){});
     assert(custom_rcbuf != NULL);
 
     assert(qcap2_video_source_push(vsrc, custom_rcbuf) == QCAP_RS_SUCCESSFUL);
@@ -633,22 +716,26 @@ void test_qcap2_audio_source_backends() {
     assert(qcap2_audio_source_pop(asrc, &popped) == QCAP_RS_SUCCESSFUL);
     assert(popped != NULL);
 
-    PVOID pData = qcap2_rcbuffer_get_data(popped);
-    assert(pData != NULL);
-    qcap2_av_frame_t* pFrame = (qcap2_av_frame_t*)pData;
+    qcap2_rcbuffer_access_t access = { sizeof(access) };
+    QRESULT r = qcap2_rcbuffer_begin_access(popped, QCAP2_RCBUFFER_ACCESS_READ | QCAP2_RCBUFFER_ACCESS_CPU, &access);
+    assert(r == QCAP_RS_SUCCESSFUL);
 
-    ULONG channels = 0, sample_fmt = 0, sample_frequency = 0, frame_size = 0;
-    qcap2_av_frame_get_audio_property(pFrame, &channels, &sample_fmt, &sample_frequency, &frame_size);
-    assert(channels == 2);
-    assert(sample_fmt == 16);
-    assert(sample_frequency == 48000);
-    assert(frame_size > 0);
+    qcap2_rcbuffer_audio_info_t audio_info = { sizeof(audio_info) };
+    r = qcap2_rcbuffer_get_audio_info(popped, &audio_info);
+    assert(r == QCAP_RS_SUCCESSFUL);
 
-    uint8_t* pSamples = NULL;
-    int stride = 0;
-    qcap2_av_frame_get_buffer(pFrame, &pSamples, &stride);
-    assert(pSamples != NULL);
-    assert(stride == (int)frame_size);
+    assert(audio_info.channels == 2);
+    assert(audio_info.sample_fmt == 16);
+    assert(audio_info.sample_frequency == 48000);
+    assert(audio_info.frame_size > 0);
+
+    qcap2_rcbuffer_plane_t plane0 = { sizeof(plane0) };
+    r = qcap2_rcbuffer_get_plane(popped, 0, &plane0);
+    assert(r == QCAP_RS_SUCCESSFUL);
+    assert(plane0.data != NULL);
+    assert(plane0.stride == (int)audio_info.frame_size);
+
+    qcap2_rcbuffer_end_access(popped, &access);
 
     qcap2_rcbuffer_release(popped);
 

@@ -13,11 +13,6 @@ struct MyVideoFrame {
 			free(buffers[i]);
 	}
 
-	static void _on_free_resource(PVOID pData) {
-		MyVideoFrame* pThis = qcap2_container_of(pData, MyVideoFrame, av_frame);
-		pThis->on_free_resource();
-	}
-
 	void on_free_resource() {
 		uint8_t* pBuffer[4];
 		int pStride[4];
@@ -34,14 +29,20 @@ _FreeStack_ += [pVideoFrame]() {
 	delete pVideoFrame;
 };
 
-qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new(&pVideoFrame->av_frame, MyVideoFrame::_on_free_resource);
+qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new_from_av_frame(&pVideoFrame->av_frame, pVideoFrame, [](void* owner, void* user_data) {
+	(void)user_data;
+	MyVideoFrame* pThis = (MyVideoFrame*)owner;
+	pThis->on_free_resource();
+});
 _FreeStack_ += [pRCBuffer]() {
 	qcap2_rcbuffer_delete(pRCBuffer);
 };
 
-qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(pRCBuffer);
-assert(pAVFrame == &pVideoFrame->av_frame);
+qcap2_rcbuffer_info_t info = { sizeof(info) };
+qcap2_rcbuffer_query(pRCBuffer, &info);
+assert(info.owner == pVideoFrame);
 
+qcap2_av_frame_t* pAVFrame = &pVideoFrame->av_frame;
 qcap2_av_frame_set_video_property(pAVFrame, nColorSpaceType, nVideoWidth, nVideoHeight);
 
 int pStride[4];

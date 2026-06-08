@@ -38,8 +38,8 @@ static void push_packets_thread(qcap2_video_decoder_t* vdec, qcap2_audio_decoder
                 qcap2_av_packet_set_property(pkt, 0, (i % 25 == 0) ? TRUE : FALSE);
             }
 
-            qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new(pkt, [](PVOID pData) {
-                qcap2_av_packet_t* p = (qcap2_av_packet_t*)pData;
+            qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_from_av_packet(pkt, pkt, [](void* owner, void* user_data) {
+                qcap2_av_packet_t* p = (qcap2_av_packet_t*)owner;
                 if (p) {
                     qcap2_av_packet_free_buffer(p);
                     delete p;
@@ -66,8 +66,8 @@ static void push_packets_thread(qcap2_video_decoder_t* vdec, qcap2_audio_decoder
                 qcap2_av_packet_set_sample_time(pkt, i * (1024.0 / 44100.0));
             }
 
-            qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new(pkt, [](PVOID pData) {
-                qcap2_av_packet_t* p = (qcap2_av_packet_t*)pData;
+            qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_from_av_packet(pkt, pkt, [](void* owner, void* user_data) {
+                qcap2_av_packet_t* p = (qcap2_av_packet_t*)owner;
                 if (p) {
                     qcap2_av_packet_free_buffer(p);
                     delete p;
@@ -297,8 +297,8 @@ int main() {
             qcap2_av_packet_set_property(pkt, 0, (i == 0) ? TRUE : FALSE);
         }
 
-        qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new(pkt, [](PVOID pData) {
-            qcap2_av_packet_t* p = (qcap2_av_packet_t*)pData;
+        qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_from_av_packet(pkt, pkt, [](void* owner, void* user_data) {
+            qcap2_av_packet_t* p = (qcap2_av_packet_t*)owner;
             if (p) {
                 qcap2_av_packet_free_buffer(p);
                 delete p;
